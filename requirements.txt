@@ -7,3 +7,7 @@ soundfile
 tensorflow-cpu
 h5py
 python-multipart
+torch
+torchaudio
+torchcrepe
+scipy

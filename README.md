@@ -16,5 +16,19 @@ This repository contains the initial skeleton for the Offline AI Audio Studio pr
 ### File locations
 
 - Uploaded audio and generated MIDI are stored under `data/projects/<timestamp>`.
-- The CREPE model is loaded from `models/melody/model.h5` (download the model into that path before running the backend).
+- The CREPE model is loaded from the manual weight file stored at `backend/vendor/crepe/model-full.h5`.
 - Generated MIDI files are exposed at `/projects/<project-id>/melody.mid` so they can be downloaded straight from the UI.
+
+## Installing Model Files (Manual)
+
+Both neural pitch engines require manually downloaded weights. GitHub rejects these large binaries, so place them locally before
+starting the backend.
+
+1. **CREPE-full**
+   - Download `model-full.h5` from [the official repository](https://github.com/marl/crepe/raw/master/assets/model-full.h5).
+   - Copy the file to `backend/vendor/crepe/model-full.h5` (you can also mirror it to `models/crepe/model-full.h5`).
+   - Re-start the backend. If the file is missing you will receive `Model missing: crepe` from the API.
+2. **TorchCREPE**
+   - Download `full.pth` from [the TorchCREPE assets](https://github.com/maxrmorrison/torchcrepe/raw/main/torchcrepe/assets/full.pth).
+   - Place the file at `backend/vendor/torchcrepe/full.pth` (optionally mirror to `models/torchcrepe/full.pth`).
+   - The backend never downloads weights automatically, so the API will return `Model missing: torchcrepe` until the file exists.

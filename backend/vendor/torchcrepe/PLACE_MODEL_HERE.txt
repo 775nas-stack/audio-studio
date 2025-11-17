@@ -1,0 +1,14 @@
+TORCHCREPE MODEL INSTALLATION
+=============================
+
+1. Download the TorchCREPE full-capacity weights:
+   URL: https://github.com/maxrmorrison/torchcrepe/raw/main/torchcrepe/assets/full.pth
+
+2. Save the file as:
+   backend/vendor/torchcrepe/full.pth
+
+3. (Optional) If you keep external assets outside the repo you can mirror the file
+   to models/torchcrepe/full.pth.
+
+The backend never downloads weights automatically. If the file is missing
+an explicit "Model missing: torchcrepe" error is raised.

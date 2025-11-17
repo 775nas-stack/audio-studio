@@ -12,10 +12,11 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from .core.audio import load_audio
+from .core.debug import ensure_debug_dir, write_debug_file
 from .core.extractor import extract_pitch
 from .core.midi_builder import build_midi
 from .core.smoothing import smooth_track
-from .core.types import NoMelodyError, PitchTrack
+from .core.types import ModelMissingError, NoMelodyError, PitchTrack
 
 LOGGER = logging.getLogger(__name__)
 
@@ -38,6 +39,11 @@ class ProjectRequest(BaseModel):
 @app.exception_handler(NoMelodyError)
 async def melody_error_handler(_, exc: NoMelodyError):  # pragma: no cover - FastAPI integration
     return JSONResponse(status_code=400, content={"error": str(exc)})
+
+
+@app.exception_handler(ModelMissingError)
+async def model_missing_handler(_, exc: ModelMissingError):  # pragma: no cover - FastAPI integration
+    return JSONResponse(status_code=500, content={"error": str(exc), "missing_model": exc.model_name})
 
 
 @app.exception_handler(HTTPException)
@@ -75,14 +81,21 @@ async def extract_midi(request: ProjectRequest):
         raise HTTPException(status_code=404, detail={"error": "Audio file not found."})
 
     audio, sr = load_audio(audio_path)
-    track = extract_pitch(audio, sr)
+    debug_dir = project_path / "debug"
+    ensure_debug_dir(debug_dir)
+
+    track = extract_pitch(audio, sr, debug_dir=debug_dir)
     smoothed = smooth_track(track)
+
+    write_debug_file(debug_dir, "smoothed_curve.json", smoothed.to_payload())
 
     contour = {
         "time": smoothed.time.tolist(),
         "frequency": smoothed.frequency.tolist(),
         "confidence": smoothed.confidence.tolist(),
         "engine": smoothed.engine,
+        "loudness": smoothed.loudness.tolist() if smoothed.loudness is not None else None,
+        "sources": smoothed.sources.tolist() if smoothed.sources is not None else None,
     }
     contour_path = project_path / "contour.json"
     contour_path.write_text(json.dumps(contour))
@@ -106,6 +119,8 @@ def _load_contour(project_id: str) -> PitchTrack:
         frequency=np.array(payload["frequency"], dtype=float),
         confidence=np.array(payload["confidence"], dtype=float),
         engine=payload.get("engine", "crepe"),
+        loudness=(np.array(payload["loudness"], dtype=float) if payload.get("loudness") is not None else None),
+        sources=(np.array(payload["sources"], dtype=object) if payload.get("sources") is not None else None),
     )
 
 
@@ -113,7 +128,9 @@ def _load_contour(project_id: str) -> PitchTrack:
 async def make_midi(request: ProjectRequest):
     track = _load_contour(request.project_id)
     midi_path = (PROJECTS_DIR / request.project_id) / "melody.mid"
-    build_midi(track, midi_path)
+    debug_dir = (PROJECTS_DIR / request.project_id) / "debug"
+    ensure_debug_dir(debug_dir)
+    build_midi(track, midi_path, debug_dir=debug_dir)
     return {
         "project_id": request.project_id,
         "midi_url": f"/projects/{request.project_id}/melody.mid",

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import numpy as np
 
+from .smoothing_advanced import smooth_track_advanced
 from .types import NoMelodyError, PitchTrack
 
 
@@ -45,7 +46,7 @@ def _rolling_operation(values: np.ndarray, fn) -> np.ndarray:
     return result
 
 
-def smooth_track(track: PitchTrack) -> PitchTrack:
+def smooth_track_basic(track: PitchTrack) -> PitchTrack:
     freq = track.frequency.copy()
     conf = track.confidence.copy()
 
@@ -60,3 +61,9 @@ def smooth_track(track: PitchTrack) -> PitchTrack:
         raise NoMelodyError("No stable monophonic melody detected.")
 
     return smoothed
+
+
+def smooth_track(track: PitchTrack, mode: str = "advanced") -> PitchTrack:
+    if mode == "basic":
+        return smooth_track_basic(track)
+    return smooth_track_advanced(track)
