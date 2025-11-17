@@ -32,9 +32,15 @@ def _resample(audio: np.ndarray, sr: int, target_sr: int) -> np.ndarray:
 
 
 def _to_mono(audio: np.ndarray) -> np.ndarray:
+    """Convert arbitrary channel layouts to mono without shrinking length."""
+
     if audio.ndim == 1:
         return audio
-    return librosa.to_mono(audio.T if audio.shape[0] < audio.shape[1] else audio)
+
+    # SoundFile returns arrays shaped (frames, channels); transpose so librosa
+    # receives the (channels, frames) layout it expects, regardless of frame
+    # count, to avoid collapsing long clips to a single sample.
+    return librosa.to_mono(audio.T)
 
 
 def load_audio_bytes(data: bytes, target_sr: int = TARGET_SAMPLE_RATE) -> Tuple[np.ndarray, int]:
@@ -70,3 +76,57 @@ def trim_leading_trailing_silence(audio: np.ndarray, threshold: float = 0.001) -
     start = np.argmax(mask)
     end = len(audio) - np.argmax(mask[::-1])
     return audio[start:end]
+
+
+def _db_to_amplitude(db_value: float) -> float:
+    return float(np.power(10.0, db_value / 20.0))
+
+
+def _high_pass_filter(audio: np.ndarray, sr: int, cutoff_hz: float = 55.0) -> np.ndarray:
+    """Apply a simple first-order high-pass filter."""
+
+    if audio.size == 0:
+        return audio
+    if cutoff_hz <= 0:
+        return audio
+    rc = 1.0 / (2 * np.pi * cutoff_hz)
+    dt = 1.0 / max(sr, 1)
+    alpha = rc / (rc + dt)
+    filtered = np.empty_like(audio)
+    filtered[0] = audio[0]
+    prev_output = filtered[0]
+    prev_input = audio[0]
+    for idx in range(1, audio.size):
+        current = audio[idx]
+        prev_output = alpha * (prev_output + current - prev_input)
+        filtered[idx] = prev_output
+        prev_input = current
+    return filtered
+
+
+def normalize_peak(audio: np.ndarray, target_db: float = -1.0) -> np.ndarray:
+    """Normalize audio so its peak matches the requested dBFS."""
+
+    if audio.size == 0:
+        return audio
+    peak = float(np.max(np.abs(audio)))
+    if peak == 0:
+        return audio
+    target_amp = _db_to_amplitude(target_db)
+    if target_amp <= 0:
+        return audio
+    scale = target_amp / peak
+    return audio * scale
+
+
+def preprocess_pitch_audio(audio: np.ndarray, sr: int) -> np.ndarray:
+    """Minimal preprocessing: convert to mono, resample, keep raw dynamics."""
+
+    if audio.ndim > 1:
+        audio = _to_mono(audio)
+
+    if sr != TARGET_SAMPLE_RATE:
+        audio = _resample(audio, sr, TARGET_SAMPLE_RATE)
+        sr = TARGET_SAMPLE_RATE
+
+    return _ensure_float32(audio)
