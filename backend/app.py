@@ -130,7 +130,13 @@ async def make_midi(request: ProjectRequest) -> Dict[str, Any]:
         track = json.load(fp)
 
     midi_path = project_dir / "melody.mid"
-    midi_utils.melody_to_midi(track, midi_path)
+    try:
+        midi_utils.melody_to_midi(track, midi_path)
+    except ValueError as exc:
+        message = str(exc)
+        if message == "No stable melody detected":
+            return {"project_id": request.project_id, "error": message}
+        raise HTTPException(status_code=400, detail=message) from exc
 
     return {
         "project_id": request.project_id,
