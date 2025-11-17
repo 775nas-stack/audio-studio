@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Offline Audio Studio</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+
+<body>
+  <div class="app-shell">
+    <header>
+      <h1>Offline Audio Studio</h1>
+      <p>Convert your audio into MIDI entirely offline.</p>
+    </header>
+
+    <section class="panel">
+      <h2>1. Upload Audio</h2>
+      <input id="audio-input" type="file" accept="audio/wav, audio/mp3">
+      <button id="upload-btn">Upload &amp; Normalize</button>
+      <p id="upload-status" class="status"></p>
+    </section>
+
+    <section class="panel">
+      <h2>2. Convert to MIDI</h2>
+      <button id="convert-btn" disabled>Extract Melody</button>
+      <button id="make-midi-btn" disabled>Create MIDI</button>
+      <a id="download-link" class="download" href="#" download="melody.mid" hidden>Download MIDI</a>
+      <p id="convert-status" class="status"></p>
+    </section>
+
+    <section class="panel chat-panel">
+      <h2>Mini Chat</h2>
+      <div id="chat-log" class="chat-log"></div>
+      <div class="chat-input">
+        <input id="chat-text" type="text" placeholder="Ask about the workflow...">
+        <button id="chat-send">Send</button>
+      </div>
+    </section>
+  </div>
+
+  <script src="script.js"></script>
+</body>
+
+</html>
