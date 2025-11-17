@@ -1,0 +1,14 @@
+CREPE FULL MODEL INSTALLATION
+=============================
+
+1. Download the official full-capacity CREPE weights:
+   URL: https://github.com/marl/crepe/raw/master/assets/model-full.h5
+
+2. Place the file at:
+   backend/vendor/crepe/model-full.h5
+
+3. (Optional) You may also copy the same file to models/crepe/model-full.h5 if you
+   keep external assets outside the repository.
+
+The backend automatically uses the file when present and will emit a
+"Model missing: crepe" error if the weight file is absent.

@@ -20,6 +20,7 @@ models = {
 
 # the model is trained on 16kHz audio
 model_srate = 16000
+MODEL_ENV_VAR = "CREPE_MODEL_PATH"
 
 
 def build_and_load_model(model_capacity):
@@ -74,10 +75,24 @@ def build_and_load_model(model_capacity):
 
         package_dir = os.path.dirname(os.path.realpath(__file__))
         repo_root = os.path.abspath(os.path.join(package_dir, os.pardir, os.pardir, os.pardir))
-        local_weights = os.path.join(repo_root, 'models', 'crepe', 'model.h5')
-        if not os.path.exists(local_weights):
-            filename = "model-{}.h5".format(model_capacity)
-            local_weights = os.path.join(package_dir, filename)
+        search_paths = [
+            os.environ.get(MODEL_ENV_VAR),
+            os.path.join(repo_root, 'backend', 'vendor', 'crepe', 'model-full.h5'),
+            os.path.join(repo_root, 'backend', 'vendor', 'crepe', 'model.h5'),
+            os.path.join(repo_root, 'models', 'crepe', 'model-full.h5'),
+            os.path.join(repo_root, 'models', 'crepe', 'model.h5'),
+        ]
+        filename = "model-{}.h5".format(model_capacity)
+        search_paths.append(os.path.join(package_dir, filename))
+        local_weights = None
+        for candidate in search_paths:
+            if candidate and os.path.exists(candidate):
+                local_weights = candidate
+                break
+        if local_weights is None:
+            raise FileNotFoundError(
+                "CREPE weights not found. Please place model-full.h5 in backend/vendor/crepe."
+            )
         model.load_weights(local_weights)
         model.compile('adam', 'binary_crossentropy')
 
