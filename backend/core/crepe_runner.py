@@ -1,9 +1,8 @@
-"""Wrapper around the CREPE model for offline pitch extraction."""
+"""TensorFlow CREPE runner with optional PYIN fallback."""
 
 from __future__ import annotations
 
 import json
-import os
 from pathlib import Path
 from typing import Dict, List
 
@@ -16,40 +15,91 @@ try:
 except Exception as exc:  # pragma: no cover - handled dynamically
     raise RuntimeError("librosa is required for pitch extraction") from exc
 
-try:  # Optional – if crepe is missing we fall back to PYIN.
-    import crepe
-except Exception:  # pragma: no cover - fallback handled below
-    crepe = None
+
+CREPE_SAMPLE_RATE = audio_utils.TARGET_SAMPLE_RATE
+CREPE_FRAME_SIZE = 1024
+CREPE_STEP_SIZE_MS = 10
+CREPE_BINS = 360
+CREPE_MIN_FREQUENCY = 32.703195662574764  # C1
+
+
+def _softmax(logits: np.ndarray) -> np.ndarray:
+    max_logits = np.max(logits, axis=1, keepdims=True)
+    exp = np.exp(logits - max_logits)
+    return exp / np.sum(exp, axis=1, keepdims=True)
+
+
+def _frequency_lookup() -> np.ndarray:
+    bins = np.arange(CREPE_BINS, dtype=np.float32)
+    return CREPE_MIN_FREQUENCY * np.power(2.0, bins / 60.0)
+
+
+CREPE_FREQUENCIES = _frequency_lookup()
 
 
 class CREPERunner:
-    """Runs CREPE on audio and returns a dictionary with time/frequency/confidence."""
+    """Runs the bundled TensorFlow CREPE model or an explicit PYIN fallback."""
 
-    def __init__(self, model_path: str | Path | None = None, *, use_pyin_fallback: bool = False) -> None:
+    def __init__(
+        self,
+        model_path: str | Path | None = None,
+        *,
+        use_pyin_fallback: bool = False,
+        step_size_ms: float = CREPE_STEP_SIZE_MS,
+    ) -> None:
         base = Path(__file__).resolve().parents[2]
         default_model = base / "models" / "melody" / "model.h5"
-        # Always prefer the bundled TensorFlow CREPE model.
-        self.model_path = Path(model_path) if model_path else default_model
-        if self.model_path != default_model and not self.model_path.exists():
-            raise FileNotFoundError(f"CREPE model not found at {self.model_path}")
+        model_path = Path(model_path) if model_path else default_model
         if not default_model.exists():
             raise FileNotFoundError(f"CREPE model not found at {default_model}")
+        if model_path != default_model and not model_path.exists():
+            raise FileNotFoundError(f"CREPE model not found at {model_path}")
         self.model_path = default_model
         self.use_pyin_fallback = use_pyin_fallback
+        self.step_size_ms = step_size_ms
+        hop = int(round(CREPE_SAMPLE_RATE * (self.step_size_ms / 1000.0)))
+        self.hop_length = max(1, hop)
+        self._model = None
+
+    def _load_model(self):  # pragma: no cover - heavy dependency
+        if self._model is None:
+            try:
+                from tensorflow import keras
+            except Exception as exc:  # pragma: no cover - depends on runtime env
+                raise RuntimeError(
+                    "TensorFlow is required to run the bundled CREPE model."
+                ) from exc
+            self._model = keras.models.load_model(str(self.model_path), compile=False)
+        return self._model
+
+    def _prepare_frames(self, audio: np.ndarray) -> np.ndarray:
+        if audio.size < CREPE_FRAME_SIZE:
+            pad = CREPE_FRAME_SIZE - audio.size
+            audio = np.pad(audio, (0, pad), mode="constant")
+        frames = librosa.util.frame(
+            audio, frame_length=CREPE_FRAME_SIZE, hop_length=self.hop_length
+        ).T
+        return frames.astype(np.float32)
 
     def _crepe_predict(self, audio: np.ndarray, sr: int) -> Dict[str, List[float]]:
-        os.environ.setdefault("CREPE_MODEL", str(self.model_path))
-        os.environ.setdefault("CREPE_CACHE_DIR", str(self.model_path.parent))
-        time, frequency, confidence, _ = crepe.predict(
-            audio,
-            sr,
-            model_capacity="full",
-            step_size=10,
-            viterbi=True,
-            verbose=0,
-        )
+        model = self._load_model()
+        frames = self._prepare_frames(audio)
+        model_input = frames[:, :, np.newaxis]
+        try:
+            logits = model.predict(model_input, verbose=0)
+        except Exception as exc:  # pragma: no cover - depends on tensorflow
+            raise RuntimeError(f"CREPE inference failed: {exc}") from exc
+        if logits.ndim == 4:
+            logits = np.squeeze(logits, axis=(1, 3))
+        elif logits.ndim == 3:
+            logits = np.squeeze(logits, axis=2)
+        probabilities = _softmax(logits)
+        best_idx = np.argmax(probabilities, axis=1)
+        confidence = np.max(probabilities, axis=1)
+        frequency = CREPE_FREQUENCIES[best_idx]
+        times = np.arange(len(frequency)) * (self.hop_length / sr)
         return {
-            "time": time.astype(float).tolist(),
+            "time": times.astype(float).tolist(),
             "frequency": frequency.astype(float).tolist(),
             "confidence": confidence.astype(float).tolist(),
             "sr": sr,
@@ -83,10 +133,6 @@ class CREPERunner:
 
         fallback = self.use_pyin_fallback if use_pyin_fallback is None else use_pyin_fallback
         if not fallback:
-            if crepe is None:
-                raise RuntimeError(
-                    "CREPE library is not available. Enable PYIN fallback explicitly to continue."
-                )
             return self._crepe_predict(audio, target_sr)
 
         return self._pyin_fallback(audio, target_sr)

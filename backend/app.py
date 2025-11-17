@@ -101,7 +101,7 @@ async def extract_midi(request: ProjectRequest) -> Dict[str, Any]:
     try:
         raw_track = runner.process_audio(str(audio_path))
     except Exception as exc:  # pragma: no cover - depends on runtime env
-        raise HTTPException(status_code=500, detail=f"CREPE processing failed: {exc}") from exc
+        raise HTTPException(status_code=400, detail=f"CREPE processing failed: {exc}") from exc
 
     _write_json(project_dir / "melody_raw.json", raw_track)
 
