@@ -14,7 +14,7 @@ const chatLog = document.getElementById('chat-log');
 const chatText = document.getElementById('chat-text');
 const chatSend = document.getElementById('chat-send');
 
-const BASE_URL = 'http://localhost:8000';
+const BASE_URL = '';
 
 function appendChatLine(text, role = 'bot') {
   const line = document.createElement('div');

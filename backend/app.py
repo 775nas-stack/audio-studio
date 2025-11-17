@@ -15,9 +15,12 @@ from pydantic import BaseModel
 from backend.core import audio_utils, crepe_runner, midi_utils, smooth_pitch
 
 
-BASE_DIR = Path(__file__).resolve().parent
-PROJECTS_DIR = BASE_DIR / "projects"
-MODEL_PATH = Path(__file__).resolve().parents[1] / "models" / "melody" / "model.h5"
+BACKEND_DIR = Path(__file__).resolve().parent
+REPO_ROOT = BACKEND_DIR.parent
+DATA_DIR = REPO_ROOT / "data"
+FRONTEND_DIR = REPO_ROOT / "frontend"
+PROJECTS_DIR = DATA_DIR / "projects"
+MODEL_PATH = REPO_ROOT / "models" / "melody" / "model.h5"
 
 PROJECTS_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -52,7 +55,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-app.mount("/backend/projects", StaticFiles(directory=PROJECTS_DIR), name="projects")
 
 
 @app.post("/upload_audio")
@@ -126,7 +128,7 @@ async def make_midi(request: ProjectRequest) -> Dict[str, Any]:
 
     return {
         "project_id": request.project_id,
-        "midi_path": f"backend/projects/{request.project_id}/melody.mid",
+        "midi_path": f"projects/{request.project_id}/melody.mid",
         "message": "MIDI file created",
     }
 
@@ -150,12 +152,11 @@ async def mini_chat(request: ChatRequest) -> Dict[str, Any]:
     return {"response": reply}
 
 
-@app.get("/")
-async def root() -> Dict[str, str]:
-    return {"status": "Audio Studio backend is running"}
+app.mount("/projects", StaticFiles(directory=PROJECTS_DIR), name="projects")
+app.mount("/", StaticFiles(directory=FRONTEND_DIR, html=True), name="frontend")
 
 
 if __name__ == "__main__":  # pragma: no cover
     import uvicorn
 
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    uvicorn.run(app, host="0.0.0.0", port=7860)
