@@ -6,3 +6,4 @@ librosa
 soundfile
 tensorflow-cpu
 h5py
+python-multipart

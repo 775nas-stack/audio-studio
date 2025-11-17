@@ -1,123 +1,84 @@
-const state = {
-  projectId: null,
-  downloadPath: null,
-};
+const statusEl = document.getElementById("status");
+const linkEl = document.getElementById("midi-link");
+const fileInput = document.getElementById("audio-input");
+const uploadBtn = document.getElementById("upload-btn");
+const extractBtn = document.getElementById("extract-btn");
+const midiBtn = document.getElementById("midi-btn");
 
-const audioInput = document.getElementById('audio-input');
-const uploadBtn = document.getElementById('upload-btn');
-const convertBtn = document.getElementById('convert-btn');
-const makeMidiBtn = document.getElementById('make-midi-btn');
-const uploadStatus = document.getElementById('upload-status');
-const convertStatus = document.getElementById('convert-status');
-const downloadLink = document.getElementById('download-link');
-const chatLog = document.getElementById('chat-log');
-const chatText = document.getElementById('chat-text');
-const chatSend = document.getElementById('chat-send');
+let projectId = null;
 
-const BASE_URL = '';
-
-function appendChatLine(text, role = 'bot') {
-  const line = document.createElement('div');
-  line.className = `chat-line ${role}`;
-  line.textContent = text;
-  chatLog.appendChild(line);
-  chatLog.scrollTop = chatLog.scrollHeight;
+function setStatus(message, isError = false) {
+  statusEl.textContent = message;
+  statusEl.style.color = isError ? "#f87171" : "#e2e8f0";
 }
 
-async function uploadAudio() {
-  if (!audioInput.files.length) {
-    uploadStatus.textContent = 'Choose a WAV or MP3 file first.';
+async function handleUpload() {
+  const file = fileInput.files[0];
+  if (!file) {
+    setStatus("Please choose a WAV file first.", true);
     return;
   }
-  const formData = new FormData();
-  formData.append('file', audioInput.files[0]);
+  const body = new FormData();
+  body.append("file", file);
+  setStatus("Uploading audio...");
+  linkEl.hidden = true;
 
-  uploadStatus.textContent = 'Uploading...';
-  const response = await fetch(`${BASE_URL}/upload_audio`, {
-    method: 'POST',
-    body: formData,
+  try {
+    const res = await fetch("/upload_audio", {
+      method: "POST",
+      body,
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      throw new Error(data.error || "Upload failed.");
+    }
+    projectId = data.project_id;
+    setStatus("Audio uploaded. Ready to extract.");
+  } catch (err) {
+    setStatus(err.message, true);
+  }
+}
+
+async function callJsonEndpoint(path) {
+  if (!projectId) {
+    throw new Error("Upload audio before continuing.");
+  }
+  const res = await fetch(path, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ project_id: projectId }),
   });
-
-  if (!response.ok) {
-    uploadStatus.textContent = 'Upload failed.';
-    return;
+  const data = await res.json();
+  if (!res.ok) {
+    throw new Error(data.error || "Request failed.");
   }
-
-  const result = await response.json();
-  state.projectId = result.project_id;
-  uploadStatus.textContent = `Project created: ${result.project_id}`;
-  convertBtn.disabled = false;
+  return data;
 }
 
-async function extractMelody() {
-  if (!state.projectId) return;
-  convertStatus.textContent = 'Running CREPE...';
-  const response = await fetch(`${BASE_URL}/extract_midi`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ project_id: state.projectId }),
-  });
-
-  if (!response.ok) {
-    convertStatus.textContent = 'Melody extraction failed.';
-    return;
+async function handleExtract() {
+  setStatus("Extracting melody...");
+  linkEl.hidden = true;
+  try {
+    const data = await callJsonEndpoint("/extract_midi");
+    setStatus(`Melody extracted with ${data.engine} (${data.frames} frames).`);
+  } catch (err) {
+    setStatus(err.message, true);
   }
-
-  const result = await response.json();
-  convertStatus.textContent = `Detected ${result.frames} frames.`;
-  makeMidiBtn.disabled = false;
 }
 
-async function createMidi() {
-  if (!state.projectId) return;
-  convertStatus.textContent = 'Building MIDI...';
-  const response = await fetch(`${BASE_URL}/make_midi`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ project_id: state.projectId }),
-  });
-
-  if (!response.ok) {
-    convertStatus.textContent = 'MIDI generation failed.';
-    return;
+async function handleMidi() {
+  setStatus("Building MIDI file...");
+  linkEl.hidden = true;
+  try {
+    const data = await callJsonEndpoint("/make_midi");
+    linkEl.href = data.midi_url;
+    linkEl.hidden = false;
+    setStatus("MIDI ready. Download below.");
+  } catch (err) {
+    setStatus(err.message, true);
   }
-
-  const result = await response.json();
-  state.downloadPath = result.midi_path;
-  downloadLink.href = `${BASE_URL}/${result.midi_path}`;
-  downloadLink.hidden = false;
-  convertStatus.textContent = 'MIDI ready!';
 }
 
-async function sendChat() {
-  const message = chatText.value.trim();
-  if (!message) return;
-  appendChatLine(message, 'user');
-  chatText.value = '';
-
-  const response = await fetch(`${BASE_URL}/chat`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ message }),
-  });
-
-  if (!response.ok) {
-    appendChatLine('Chat service unavailable.');
-    return;
-  }
-  const result = await response.json();
-  appendChatLine(result.response || '...');
-}
-
-uploadBtn.addEventListener('click', uploadAudio);
-convertBtn.addEventListener('click', extractMelody);
-makeMidiBtn.addEventListener('click', createMidi);
-chatSend.addEventListener('click', sendChat);
-chatText.addEventListener('keydown', (event) => {
-  if (event.key === 'Enter') {
-    event.preventDefault();
-    sendChat();
-  }
-});
-
-appendChatLine('Welcome! Upload audio to begin.');
+uploadBtn.addEventListener("click", handleUpload);
+extractBtn.addEventListener("click", handleExtract);
+midiBtn.addEventListener("click", handleMidi);
