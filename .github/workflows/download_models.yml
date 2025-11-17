@@ -18,24 +18,12 @@ jobs:
 
       - name: Extract CREPE model files
         run: |
-          python3 - <<'PYCODE'
-from pathlib import Path
-import crepe, shutil
-
-model_dir = Path(crepe.__file__).parent / "models"
-target = Path("models/melody")
-target.mkdir(parents=True, exist_ok=True)
-
-for f in model_dir.glob("*"):
-    shutil.copy(str(f), str(target))
-    print("Copied:", f, "->", target)
-PYCODE
+          python3 scripts/extract_crepe_models.py
 
       - name: Commit models
         run: |
           git config user.name "github-actions"
           git config user.email "actions@github.com"
           git add models/
-          git commit -m "Imported official CREPE pretrained models via pip" || echo "No changes"
+          git commit -m "Imported CREPE models" || echo "No changes"
           git push
-          
