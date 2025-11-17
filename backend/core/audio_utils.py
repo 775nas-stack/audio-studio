@@ -19,10 +19,11 @@ TARGET_SAMPLE_RATE = 16_000
 
 
 def _ensure_float32(audio: np.ndarray) -> np.ndarray:
-    if audio.dtype != np.float32:
-        audio = audio.astype(np.float32)
-    max_val = np.max(np.abs(audio)) or 1.0
-    return audio / max_val
+    """Cast the buffer to float32 without altering its dynamics."""
+
+    if audio.dtype == np.float32:
+        return audio
+    return audio.astype(np.float32)
 
 
 def _resample(audio: np.ndarray, sr: int, target_sr: int) -> np.ndarray:
