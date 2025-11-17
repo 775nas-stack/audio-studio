@@ -1,0 +1,117 @@
+name: Download Models
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+
+jobs:
+  download-models:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: true
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install requests
+
+      - name: Download CREPE and TorchCREPE models
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          python - <<'PY'
+import os
+import sys
+import requests
+
+SESSION = requests.Session()
+headers = {
+    "Accept": "application/vnd.github+json"
+}
+token = os.environ.get("GITHUB_TOKEN")
+if token:
+    headers["Authorization"] = f"Bearer {token}"
+SESSION.headers.update(headers)
+
+MODELS = [
+    {
+        "repo": "marl/crepe",
+        "path": "crepe/assets",
+        "filename": "model-full.h5",
+        "destination": "backend/vendor/crepe/model-full.h5",
+    },
+    {
+        "repo": "maxrmorrison/torchcrepe",
+        "path": "torchcrepe/assets",
+        "filename": "full.pth",
+        "destination": "backend/vendor/torchcrepe/full.pth",
+    },
+]
+
+
+def fetch_download_url(repo, content_path, target_filename):
+    url = f"https://api.github.com/repos/{repo}/contents/{content_path}"
+    print(f"Fetching contents from {url}")
+    response = SESSION.get(url)
+    response.raise_for_status()
+    entries = response.json()
+    if not isinstance(entries, list):
+        raise RuntimeError(f"Unexpected response structure when listing {repo}:{content_path}")
+    for entry in entries:
+        if entry.get("name") == target_filename:
+            download_url = entry.get("download_url")
+            if not download_url:
+                raise RuntimeError(f"download_url missing for {target_filename} in {repo}")
+            print(f"Found download URL for {target_filename}")
+            return download_url
+    raise FileNotFoundError(f"{target_filename} not found in {repo}/{content_path}")
+
+
+def download_file(download_url, destination):
+    os.makedirs(os.path.dirname(destination), exist_ok=True)
+    print(f"Downloading {download_url} -> {destination}")
+    with SESSION.get(download_url, stream=True) as response:
+        response.raise_for_status()
+        with open(destination, "wb") as handle:
+            for chunk in response.iter_content(chunk_size=8192):
+                if chunk:
+                    handle.write(chunk)
+    size = os.path.getsize(destination)
+    if size <= 0:
+        raise RuntimeError(f"Downloaded file at {destination} is empty")
+    print(f"Saved {destination} ({size} bytes)")
+
+
+for model in MODELS:
+    try:
+        url = fetch_download_url(model["repo"], model["path"], model["filename"])
+        download_file(url, model["destination"])
+    except Exception as exc:
+        print(f"Error processing {model['filename']}: {exc}", file=sys.stderr)
+        raise
+
+print("Model download completed successfully.")
+PY
+
+      - name: Commit and push models
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add backend/vendor/crepe/model-full.h5 backend/vendor/torchcrepe/full.pth
+          if git diff --cached --quiet; then
+            echo "No changes to commit."
+          else
+            git commit -m "Add CREPE full model and TorchCREPE full model"
+            git push
