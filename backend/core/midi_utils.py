@@ -15,6 +15,11 @@ MAX_INTERP_GAP_SECONDS = 0.1
 HUMMING_MAX_INTERP_GAP_SECONDS = 0.05
 MIN_NOTE_DURATION_SECONDS = 0.08
 HUMMING_MIN_NOTE_DURATION_SECONDS = 0.03
+MERGE_GAP_SECONDS = 0.1
+HUMMING_MERGE_GAP_SECONDS = 0.05
+MEDIAN_WINDOW = 5
+MEAN_WINDOW = 5
+JUMP_LIMIT_CENTS = 300.0
 
 
 def _hz_to_midi(freq: float) -> int:
@@ -35,6 +40,43 @@ def _estimate_frame_duration(time: np.ndarray) -> float:
     if diffs.size == 0:
         return 0.0
     return float(np.median(diffs))
+
+
+def _median_filter(values: np.ndarray, window: int = MEDIAN_WINDOW) -> np.ndarray:
+    if window <= 1 or values.size < 2:
+        return values
+    pad = window // 2
+    padded = np.pad(values, (pad, pad), mode="edge")
+    filtered = np.empty_like(values)
+    for idx in range(values.size):
+        filtered[idx] = np.median(padded[idx : idx + window])
+    return filtered
+
+
+def _moving_average(values: np.ndarray, window: int = MEAN_WINDOW) -> np.ndarray:
+    if window <= 1 or values.size < 2:
+        return values
+    kernel = np.ones(window, dtype=float) / float(window)
+    smoothed = np.convolve(values, kernel, mode="same")
+    return smoothed.astype(values.dtype)
+
+
+def _limit_jumps(values: np.ndarray, cents_threshold: float = JUMP_LIMIT_CENTS) -> np.ndarray:
+    if values.size == 0:
+        return values
+    stabilized = values.copy()
+    last = stabilized[0]
+    for idx in range(1, values.size):
+        current = stabilized[idx]
+        if last <= 0 or current <= 0:
+            last = current
+            continue
+        cents = 1200.0 * np.log2(current / last)
+        if abs(cents) > cents_threshold:
+            stabilized[idx] = last
+        else:
+            last = current
+    return stabilized
 
 
 def _interpolate_small_gaps(
@@ -92,66 +134,108 @@ def _clean_pitch_track(
     track: Dict[str, Sequence[float]],
     *,
     humming_mode: bool = False,
-) -> Tuple[np.ndarray, np.ndarray]:
+) -> Tuple[np.ndarray, np.ndarray, float, Tuple[float, float]]:
     time = np.asarray(track.get("time", []), dtype=float)
     freq = np.asarray(track.get("frequency", []), dtype=float)
     if time.size == 0 or freq.size == 0:
-        return np.array([], dtype=float), np.array([], dtype=float)
+        return (
+            np.array([], dtype=float),
+            np.array([], dtype=float),
+            0.0,
+            (0.0, 0.0),
+        )
 
     length = min(time.size, freq.size)
     time = time[:length]
     freq = np.nan_to_num(freq[:length], nan=0.0, posinf=0.0, neginf=0.0)
 
+    order = np.argsort(time)
+    time = time[order]
+    freq = freq[order]
+
     mask = np.ones(length, dtype=bool)
     mask &= np.isfinite(time)
     mask &= np.isfinite(freq)
-    mask &= freq > 0
 
     voiced_flag = track.get("voiced_flag")
     if voiced_flag is not None:
         voiced_arr = np.asarray(voiced_flag, dtype=bool)
         if voiced_arr.size >= length:
-            mask &= voiced_arr[:length]
+            voiced_arr = voiced_arr[:length]
+        else:
+            voiced_arr = np.pad(voiced_arr, (0, length - voiced_arr.size), constant_values=False)
+        mask &= voiced_arr[order]
+    else:
+        mask &= freq > 0
+
+    max_freq = HUMMING_MAX_ALLOWED_FREQ if humming_mode else MAX_ALLOWED_FREQ
+    freq = np.clip(freq, a_min=0.0, a_max=max_freq)
 
     max_gap = HUMMING_MAX_INTERP_GAP_SECONDS if humming_mode else MAX_INTERP_GAP_SECONDS
     freq, mask = _interpolate_small_gaps(time, freq, mask, max_gap)
-    freq = np.clip(freq, a_min=0.0, a_max=None)
 
-    mask &= np.isfinite(freq)
-    mask &= freq >= MIN_ALLOWED_FREQ
-    max_freq = HUMMING_MAX_ALLOWED_FREQ if humming_mode else MAX_ALLOWED_FREQ
+    freq = _median_filter(freq)
+    freq = _moving_average(freq)
+    freq = _limit_jumps(freq)
+
+    min_freq = MIN_ALLOWED_FREQ
+    mask &= freq >= min_freq
     mask &= freq <= max_freq
 
-    if not np.any(mask):
-        return np.array([], dtype=float), np.array([], dtype=float)
+    if not np.any(mask) and np.any(freq > 0):
+        mask = freq > 0
 
-    return time[mask], freq[mask]
+    frame_duration = _estimate_frame_duration(time)
+    if frame_duration <= 0:
+        frame_duration = 0.01
+
+    bounds = (float(time[0]), float(time[-1])) if time.size else (0.0, 0.0)
+    return time[mask], freq[mask], frame_duration, bounds
 
 
 def _merge_midi_frames(
-    time: np.ndarray, midi_pitch: np.ndarray, frame_duration: float
+    time: np.ndarray,
+    midi_pitch: np.ndarray,
+    frame_duration: float,
+    merge_gap: float,
 ) -> List[Tuple[float, float, int]]:
     if midi_pitch.size == 0:
         return []
 
+    step = max(frame_duration, 1e-3)
     segments: List[Tuple[float, float, int]] = []
+    segment_start = float(time[0])
+    segment_end = segment_start + step
     current_pitch = int(midi_pitch[0])
-    start_time = float(time[0])
+    prev_time = float(time[0])
 
     for idx in range(1, midi_pitch.size):
-        if int(midi_pitch[idx]) != current_pitch:
-            end_time = float(time[idx])
-            if end_time <= start_time:
-                end_time = start_time + max(frame_duration, 1e-3)
-            segments.append((start_time, end_time, current_pitch))
-            start_time = float(time[idx])
+        t = float(time[idx])
+        same_pitch = abs(int(midi_pitch[idx]) - current_pitch) <= 1
+        contiguous = (t - prev_time) <= (frame_duration * 1.5 if frame_duration > 0 else merge_gap)
+        if contiguous and same_pitch:
+            segment_end = t + step
+        else:
+            segments.append((segment_start, segment_end, current_pitch))
+            segment_start = t
+            segment_end = t + step
             current_pitch = int(midi_pitch[idx])
+        prev_time = t
 
-    end_time = float(time[-1]) + frame_duration
-    if end_time <= start_time:
-        end_time = start_time + max(frame_duration, 1e-3)
-    segments.append((start_time, end_time, current_pitch))
-    return segments
+    segments.append((segment_start, segment_end, current_pitch))
+
+    merged: List[Tuple[float, float, int]] = []
+    for start, end, pitch in segments:
+        if not merged:
+            merged.append((start, end, pitch))
+            continue
+        prev_start, prev_end, prev_pitch = merged[-1]
+        gap = start - prev_end
+        if gap <= merge_gap and abs(prev_pitch - pitch) <= 1:
+            merged[-1] = (prev_start, max(prev_end, end), prev_pitch)
+        else:
+            merged.append((start, end, pitch))
+    return merged
 
 
 def _filter_short_segments(
@@ -166,6 +250,13 @@ def _filter_short_segments(
     return filtered
 
 
+def _write_empty_midi(output_path: Path, tempo: float) -> Path:
+    midi = pretty_midi.PrettyMIDI(initial_tempo=tempo)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    midi.write(str(output_path))
+    return output_path
+
+
 def build_midi_from_track(
     track: Dict[str, List[float]],
     output_path: Path,
@@ -175,33 +266,41 @@ def build_midi_from_track(
 ) -> Path:
     """Convert a smoothed melody track into a quantized PrettyMIDI file."""
 
-    time, freq = _clean_pitch_track(track, humming_mode=humming_mode)
+    print(
+        f"[midi_builder] Cleaning track with humming_mode={humming_mode} and {len(track.get('time', []))} frames"
+    )
+    time, freq, frame_duration, bounds = _clean_pitch_track(
+        track, humming_mode=humming_mode
+    )
     if time.size == 0 or freq.size == 0:
-        raise ValueError("No stable melody detected")
+        print("[midi_builder] No voiced frames – writing empty MIDI file")
+        return _write_empty_midi(output_path, tempo)
 
     midi_pitch = np.array([_hz_to_midi(hz) for hz in freq], dtype=int)
-    frame_duration = _estimate_frame_duration(time)
-    segments = _merge_midi_frames(time, midi_pitch, frame_duration)
+    merge_gap = HUMMING_MERGE_GAP_SECONDS if humming_mode else MERGE_GAP_SECONDS
+    segments = _merge_midi_frames(time, midi_pitch, frame_duration, merge_gap)
     min_duration = (
         HUMMING_MIN_NOTE_DURATION_SECONDS if humming_mode else MIN_NOTE_DURATION_SECONDS
     )
-    segments = _filter_short_segments(segments, min_duration)
+    filtered_segments = _filter_short_segments(segments, min_duration)
+    if not filtered_segments and segments:
+        filtered_segments = segments
 
-    if not segments and humming_mode and time.size > 0:
-        start = float(time[0])
-        end = float(time[-1]) + max(frame_duration, min_duration, 1e-3)
+    if not filtered_segments:
+        start = bounds[0]
+        end = bounds[1] + max(frame_duration, min_duration, 0.2)
+        if end <= start:
+            end = start + max(frame_duration, min_duration, 0.2)
         fallback_pitch = int(np.clip(int(round(np.median(midi_pitch))), 0, 127))
-        segments = [(start, end, fallback_pitch)]
-
-    if not segments:
-        raise ValueError("No stable melody detected")
+        filtered_segments = [(start, end, fallback_pitch)]
+        print("[midi_builder] Synthesized fallback note from noisy frames")
 
     sixteenth = 60.0 / tempo / 4.0
 
     midi = pretty_midi.PrettyMIDI(initial_tempo=tempo)
     instrument = pretty_midi.Instrument(program=0, name="Melody")
 
-    for start, end, midi_note in segments:
+    for start, end, midi_note in filtered_segments:
         start_q = _quantize_time(start, sixteenth)
         end_q = _quantize_time(end, sixteenth)
         if end_q <= start_q:
@@ -217,6 +316,11 @@ def build_midi_from_track(
     midi.instruments.append(instrument)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     midi.write(str(output_path))
+    if instrument.notes:
+        coverage = f"{instrument.notes[0].start:.2f}s→{instrument.notes[-1].end:.2f}s"
+    else:
+        coverage = "0.00s"
+    print(f"[midi_builder] Wrote {len(instrument.notes)} notes covering {coverage}")
     return output_path
 
 

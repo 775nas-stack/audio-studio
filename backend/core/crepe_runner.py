@@ -54,11 +54,9 @@ class CREPERunner:
         base = Path(__file__).resolve().parents[2]
         default_model = base / "models" / "melody" / "model.h5"
         model_path = Path(model_path) if model_path else default_model
-        if not default_model.exists():
-            raise FileNotFoundError(f"CREPE model not found at {default_model}")
-        if model_path != default_model and not model_path.exists():
+        if not model_path.exists():
             raise FileNotFoundError(f"CREPE model not found at {model_path}")
-        self.model_path = default_model
+        self.model_path = model_path
         self.use_pyin_fallback = use_pyin_fallback
         self.step_size_ms = step_size_ms
         hop = int(round(CREPE_SAMPLE_RATE * (self.step_size_ms / 1000.0)))
@@ -102,6 +100,7 @@ class CREPERunner:
         best_idx = np.argmax(probabilities, axis=1)
         confidence = np.max(probabilities, axis=1)
         frequency = CREPE_FREQUENCIES[best_idx]
+        frequency = np.nan_to_num(frequency, nan=0.0, posinf=0.0, neginf=0.0)
         times = np.arange(len(frequency)) * (self.hop_length / sr)
         return {
             "time": times.astype(float).tolist(),
@@ -113,7 +112,7 @@ class CREPERunner:
     def _pyin_humming(self, audio: np.ndarray, sr: int) -> Dict[str, List[float]]:
         frame_length = 2048
         hop_length = max(1, int(round(sr * 0.01)))
-        f0, _, voiced_prob = librosa.pyin(
+        f0, voiced_flag, voiced_prob = librosa.pyin(
             audio,
             fmin=50.0,
             fmax=800.0,
@@ -135,11 +134,16 @@ class CREPERunner:
             voiced_prob = np.zeros_like(frequencies)
         confidence = np.nan_to_num(voiced_prob, nan=0.0).astype(np.float32)
         confidence[frequencies <= 0] = 0.0
+        if voiced_flag is not None:
+            voiced_flag = np.asarray(voiced_flag, dtype=bool)
+        else:
+            voiced_flag = frequencies > 0
         return {
             "time": times.astype(float).tolist(),
             "frequency": frequencies.astype(float).tolist(),
             "confidence": confidence.astype(float).tolist(),
             "sr": sr,
+            "voiced_flag": voiced_flag.astype(bool).tolist(),
             "humming_mode": True,
         }
 
@@ -182,6 +186,7 @@ class CREPERunner:
         target_sr = audio_utils.TARGET_SAMPLE_RATE
         audio, _ = audio_utils.load_audio_file(audio_path, target_sr=target_sr)
         audio = self._preprocess_audio(audio, target_sr)
+        print(f"[CREPERunner] Loaded audio '{audio_path}' with {audio.size} samples")
 
         force_pyin = self.use_pyin_fallback if use_pyin_fallback is None else use_pyin_fallback
         if force_pyin:
