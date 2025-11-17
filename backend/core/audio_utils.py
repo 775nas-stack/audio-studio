@@ -32,9 +32,15 @@ def _resample(audio: np.ndarray, sr: int, target_sr: int) -> np.ndarray:
 
 
 def _to_mono(audio: np.ndarray) -> np.ndarray:
+    """Convert arbitrary channel layouts to mono without shrinking length."""
+
     if audio.ndim == 1:
         return audio
-    return librosa.to_mono(audio.T if audio.shape[0] < audio.shape[1] else audio)
+
+    # SoundFile returns arrays shaped (frames, channels); transpose so librosa
+    # receives the (channels, frames) layout it expects, regardless of frame
+    # count, to avoid collapsing long clips to a single sample.
+    return librosa.to_mono(audio.T)
 
 
 def load_audio_bytes(data: bytes, target_sr: int = TARGET_SAMPLE_RATE) -> Tuple[np.ndarray, int]:
@@ -113,21 +119,14 @@ def normalize_peak(audio: np.ndarray, target_db: float = -1.0) -> np.ndarray:
     return audio * scale
 
 
-def preprocess_pitch_audio(
-    audio: np.ndarray,
-    sr: int,
-    *,
-    high_pass_hz: float = 55.0,
-    target_peak_db: float = -1.0,
-    silence_threshold_db: float = -45.0,
-) -> np.ndarray:
-    """Apply preprocessing tailored for pitch extraction."""
+def preprocess_pitch_audio(audio: np.ndarray, sr: int) -> np.ndarray:
+    """Minimal preprocessing: convert to mono, resample, keep raw dynamics."""
 
     if audio.ndim > 1:
         audio = _to_mono(audio)
-    audio = _ensure_float32(audio)
-    filtered = _high_pass_filter(audio, sr, cutoff_hz=high_pass_hz)
-    normalized = normalize_peak(filtered, target_db=target_peak_db)
-    silence_threshold = _db_to_amplitude(silence_threshold_db)
-    trimmed = trim_leading_trailing_silence(normalized, threshold=silence_threshold)
-    return trimmed.astype(np.float32, copy=False)
+
+    if sr != TARGET_SAMPLE_RATE:
+        audio = _resample(audio, sr, TARGET_SAMPLE_RATE)
+        sr = TARGET_SAMPLE_RATE
+
+    return _ensure_float32(audio)
