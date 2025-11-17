@@ -1,16 +1,16 @@
-"""TensorFlow CREPE runner with optional PYIN fallback."""
+"""Pitch extraction pipeline using CREPE with a PYIN fallback."""
 
 from __future__ import annotations
 
-import json
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 import numpy as np
 
 from backend.core import audio_utils
 
-try:
+try:  # Guard heavy dependencies so failures surface clearly.
     import librosa
 except Exception as exc:  # pragma: no cover - handled dynamically
     raise RuntimeError("librosa is required for pitch extraction") from exc
@@ -18,9 +18,11 @@ except Exception as exc:  # pragma: no cover - handled dynamically
 
 CREPE_SAMPLE_RATE = audio_utils.TARGET_SAMPLE_RATE
 CREPE_FRAME_SIZE = 1024
-CREPE_STEP_SIZE_MS = 10
+CREPE_STEP_SIZE_MS = 10.0
 CREPE_BINS = 360
 CREPE_MIN_FREQUENCY = 32.703195662574764  # C1
+MIN_USABLE_FRAMES = 20
+CONFIDENCE_THRESHOLD = 0.25
 
 
 def _softmax(logits: np.ndarray) -> np.ndarray:
@@ -38,40 +40,121 @@ CREPE_FREQUENCIES = _frequency_lookup()
 
 
 class PitchExtractionError(RuntimeError):
-    """Raised when both CREPE and PYIN fail to detect a melody."""
+    """Raised when no monophonic melody contour can be estimated."""
+
+
+@dataclass
+class PitchTrack:
+    time: np.ndarray
+    frequency: np.ndarray
+    confidence: np.ndarray
+    source: str
+    sr: int
+
+    def finite_mask(self) -> np.ndarray:
+        freq_mask = np.isfinite(self.frequency) & (self.frequency > 0)
+        conf_mask = self.confidence > 0
+        return freq_mask & conf_mask
+
+    def finite_count(self) -> int:
+        return int(np.count_nonzero(self.finite_mask()))
+
+    def stats(self) -> Dict[str, float]:
+        mask = self.finite_mask()
+        if not np.any(mask):
+            return {
+                "finite_frames": 0,
+                "median_confidence": float(np.median(self.confidence)) if self.confidence.size else 0.0,
+                "median_frequency": 0.0,
+                "min_frequency": 0.0,
+                "max_frequency": 0.0,
+            }
+        freqs = self.frequency[mask]
+        conf = self.confidence[mask]
+        return {
+            "finite_frames": int(mask.sum()),
+            "median_confidence": float(np.median(conf)) if conf.size else 0.0,
+            "median_frequency": float(np.median(freqs)),
+            "min_frequency": float(np.min(freqs)),
+            "max_frequency": float(np.max(freqs)),
+        }
+
+    def to_dict(self) -> Dict[str, List[float]]:
+        return {
+            "time": self.time.astype(float).tolist(),
+            "frequency": self.frequency.astype(float).tolist(),
+            "confidence": self.confidence.astype(float).tolist(),
+            "sr": self.sr,
+            "source": self.source,
+        }
 
 
 class CREPERunner:
-    """Runs the bundled TensorFlow CREPE model or an explicit PYIN fallback."""
+    """Runs the bundled TensorFlow CREPE model with a musical PYIN fallback."""
 
     def __init__(
         self,
         model_path: str | Path | None = None,
         *,
-        use_pyin_fallback: bool = False,
         step_size_ms: float = CREPE_STEP_SIZE_MS,
     ) -> None:
         base = Path(__file__).resolve().parents[2]
         default_model = base / "models" / "melody" / "model.h5"
-        model_path = Path(model_path) if model_path else default_model
-        if not model_path.exists():
-            raise FileNotFoundError(f"CREPE model not found at {model_path}")
-        self.model_path = model_path
-        self.use_pyin_fallback = use_pyin_fallback
-        self.step_size_ms = step_size_ms
-        hop = int(round(CREPE_SAMPLE_RATE * (self.step_size_ms / 1000.0)))
+        self.model_path = Path(model_path) if model_path else default_model
+        if not self.model_path.exists():
+            raise FileNotFoundError(f"CREPE model not found at {self.model_path}")
+        hop = int(round(CREPE_SAMPLE_RATE * (step_size_ms / 1000.0)))
         self.hop_length = max(1, hop)
+        self.step_size_ms = step_size_ms
         self._model = None
-        self._voicing_threshold = 0.5
 
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
+    def process_audio(self, audio_path: str | Path) -> Dict[str, List[float]]:
+        audio, sr = audio_utils.load_audio_mono_16k(audio_path)
+        print(f"[CREPERunner] Loaded audio '{audio_path}' with {audio.size} samples")
+        track = self.process(audio, sr)
+        track_dict = track.to_dict()
+        track_dict["humming_mode"] = track.source == "pyin"
+        return track_dict
+
+    def process(self, audio: np.ndarray, sr: int) -> PitchTrack:
+        crepe_track = self._crepe_predict(audio, sr)
+        crepe_stats = crepe_track.stats()
+        self._log_track_stats("CREPE", crepe_stats)
+
+        pyin_track: Optional[PitchTrack] = None
+        if crepe_stats["finite_frames"] < MIN_USABLE_FRAMES or crepe_stats["median_confidence"] < CONFIDENCE_THRESHOLD:
+            pyin_track = self._pyin_predict(audio, sr)
+        else:
+            # CREPE looked okay, but keep PYIN as a fallback if it still fails downstream.
+            if crepe_stats["finite_frames"] == 0:
+                pyin_track = self._pyin_predict(audio, sr)
+
+        if pyin_track is not None:
+            pyin_stats = pyin_track.stats()
+            self._log_track_stats("PYIN", pyin_stats)
+            track = self._choose_track(crepe_track, pyin_track)
+        else:
+            track = crepe_track
+
+        if track.finite_count() == 0:
+            raise PitchExtractionError(
+                "No stable monophonic melody detected in the audio."
+            )
+
+        return track
+
+    # ------------------------------------------------------------------
+    # Internals
+    # ------------------------------------------------------------------
     def _load_model(self):  # pragma: no cover - heavy dependency
         if self._model is None:
             try:
                 from tensorflow import keras
-            except Exception as exc:  # pragma: no cover - depends on runtime env
-                raise RuntimeError(
-                    "TensorFlow is required to run the bundled CREPE model."
-                ) from exc
+            except Exception as exc:  # pragma: no cover
+                raise RuntimeError("TensorFlow is required to run CREPE") from exc
             self._model = keras.models.load_model(str(self.model_path), compile=False)
         return self._model
 
@@ -79,127 +162,88 @@ class CREPERunner:
         if audio.size < CREPE_FRAME_SIZE:
             pad = CREPE_FRAME_SIZE - audio.size
             audio = np.pad(audio, (0, pad), mode="constant")
-        frames = librosa.util.frame(
-            audio, frame_length=CREPE_FRAME_SIZE, hop_length=self.hop_length
-        ).T
-        return frames.astype(np.float32)
+        frames = librosa.util.frame(audio, frame_length=CREPE_FRAME_SIZE, hop_length=self.hop_length)
+        return frames.T.astype(np.float32)
 
-    def _crepe_predict(self, audio: np.ndarray, sr: int) -> Dict[str, List[float]]:
+    def _crepe_predict(self, audio: np.ndarray, sr: int) -> PitchTrack:
         model = self._load_model()
         frames = self._prepare_frames(audio)
         model_input = frames[:, :, np.newaxis]
-        try:
-            logits = model.predict(model_input, verbose=0)
-        except Exception as exc:  # pragma: no cover - depends on tensorflow
-            raise RuntimeError(f"CREPE inference failed: {exc}") from exc
+        logits = model.predict(model_input, verbose=0)
         if logits.ndim == 4:
             logits = np.squeeze(logits, axis=(1, 3))
         elif logits.ndim == 3:
             logits = np.squeeze(logits, axis=2)
         probabilities = _softmax(logits)
         best_idx = np.argmax(probabilities, axis=1)
-        confidence = np.max(probabilities, axis=1)
-        frequency = CREPE_FREQUENCIES[best_idx]
-        frequency = np.nan_to_num(frequency, nan=0.0, posinf=0.0, neginf=0.0)
-        times = np.arange(len(frequency)) * (self.hop_length / sr)
-        return {
-            "time": times.astype(float).tolist(),
-            "frequency": frequency.astype(float).tolist(),
-            "confidence": confidence.astype(float).tolist(),
-            "sr": sr,
-        }
+        confidence = np.max(probabilities, axis=1).astype(np.float32)
+        frequency = CREPE_FREQUENCIES[best_idx].astype(np.float32)
+        times = np.arange(len(frequency), dtype=np.float32) * (self.hop_length / sr)
+        return PitchTrack(
+            time=times,
+            frequency=frequency,
+            confidence=confidence,
+            source="crepe",
+            sr=sr,
+        )
 
-    def _pyin_humming(self, audio: np.ndarray, sr: int) -> Dict[str, List[float]]:
+    def _pyin_predict(self, audio: np.ndarray, sr: int) -> PitchTrack:
         frame_length = 2048
-        hop_length = max(1, int(round(sr * 0.01)))
-        f0, _, _ = librosa.pyin(
+        hop_length = max(1, int(round(sr * (self.step_size_ms / 1000.0))))
+        fmin = librosa.note_to_hz("C2")
+        fmax = librosa.note_to_hz("C6")
+        f0, voiced_flag, voiced_prob = librosa.pyin(
             audio,
-            fmin=50.0,
-            fmax=800.0,
+            fmin=fmin,
+            fmax=fmax,
             sr=sr,
             frame_length=frame_length,
             hop_length=hop_length,
             center=True,
-            fill_na=None,
+            fill_na=np.nan,
         )
         if f0 is None:
-            f0 = np.array([], dtype=float)
-        frame_times = np.arange(len(f0), dtype=float) * (hop_length / sr)
-        mask = np.isfinite(f0) & (f0 > 0)
-        times = frame_times[mask].astype(float)
-        frequencies = f0[mask].astype(np.float32)
-        confidence = np.full_like(frequencies, 0.9, dtype=np.float32)
-        voiced_flag = np.ones_like(frequencies, dtype=bool)
-        return {
-            "time": times.tolist(),
-            "frequency": frequencies.astype(float).tolist(),
-            "confidence": confidence.astype(float).tolist(),
-            "sr": sr,
-            "voiced_flag": voiced_flag.tolist(),
-            "humming_mode": True,
-        }
+            f0 = np.array([], dtype=np.float32)
+        if voiced_flag is None:
+            voiced_flag = np.zeros_like(f0, dtype=bool)
+        if voiced_prob is None:
+            voiced_prob = np.zeros_like(f0, dtype=np.float32)
+        time = np.arange(len(f0), dtype=np.float32) * (hop_length / sr)
+        confidence = voiced_prob if voiced_prob is not None else None
+        if confidence is None or confidence.size == 0:
+            confidence = voiced_flag.astype(np.float32)
+        else:
+            confidence = np.nan_to_num(confidence, nan=0.0).astype(np.float32)
+        freq = np.array(f0, dtype=np.float32)
+        freq[~np.asarray(voiced_flag, dtype=bool)] = np.nan
+        return PitchTrack(
+            time=time,
+            frequency=freq,
+            confidence=confidence,
+            source="pyin",
+            sr=sr,
+        )
 
-    def _count_finite_frames(self, track: Dict[str, List[float]]) -> int:
-        freqs = np.asarray(track.get("frequency", []), dtype=float)
-        if freqs.size == 0:
-            return 0
-        mask = np.isfinite(freqs) & (freqs > 0)
-        return int(np.count_nonzero(mask))
-
-    def _preprocess_audio(self, audio: np.ndarray, sr: int) -> np.ndarray:
-        return audio_utils.preprocess_pitch_audio(audio, sr)
-
-    def process_audio(
-        self,
-        audio_path: str | Path,
-        *,
-        use_pyin_fallback: bool | None = None,
-    ) -> Dict[str, List[float]]:
-        """Load audio and run CREPE (or optional PYIN) to extract melody."""
-
-        target_sr = audio_utils.TARGET_SAMPLE_RATE
-        audio, _ = audio_utils.load_audio_file(audio_path, target_sr=target_sr)
-        audio = self._preprocess_audio(audio, target_sr)
-        print(f"[CREPERunner] Loaded audio '{audio_path}' with {audio.size} samples")
-
-        force_pyin = self.use_pyin_fallback if use_pyin_fallback is None else use_pyin_fallback
-        if force_pyin:
-            print("CREPE failed → PYIN humming mode used")
-            pyin_track = self._pyin_humming(audio, target_sr)
-            pyin_count = self._count_finite_frames(pyin_track)
-            print(f"[CREPERunner] PYIN finite frames: {pyin_count}")
-            if pyin_count > 0:
-                return pyin_track
-            raise PitchExtractionError("No stable pitch detected in the audio.")
-
-        crepe_track = None
-        try:
-            crepe_track = self._crepe_predict(audio, target_sr)
-        except Exception:
-            crepe_track = None
-
-        if crepe_track:
-            crepe_count = self._count_finite_frames(crepe_track)
-            print(f"[CREPERunner] CREPE finite frames: {crepe_count}")
-            if crepe_count > 0:
-                print("CREPE used")
-                crepe_track["humming_mode"] = False
-                return crepe_track
-
-        print("CREPE failed → PYIN humming mode used")
-        try:
-            pyin_track = self._pyin_humming(audio, target_sr)
-        except Exception as exc:  # pragma: no cover - depends on librosa internals
-            raise PitchExtractionError("No stable pitch detected in the audio.") from exc
-
-        pyin_count = self._count_finite_frames(pyin_track)
-        print(f"[CREPERunner] PYIN finite frames: {pyin_count}")
-        if pyin_count > 0:
+    def _choose_track(self, crepe_track: PitchTrack, pyin_track: PitchTrack) -> PitchTrack:
+        if crepe_track.finite_count() == 0 and pyin_track.finite_count() > 0:
+            print("[CREPERunner] CREPE unusable – switching to PYIN")
             return pyin_track
+        if pyin_track.finite_count() == 0:
+            return crepe_track
+        crepe_stats = crepe_track.stats()
+        pyin_stats = pyin_track.stats()
+        if pyin_stats["finite_frames"] > crepe_stats["finite_frames"] * 1.2:
+            print("[CREPERunner] PYIN selected (more finite frames)")
+            return pyin_track
+        if pyin_stats["median_confidence"] > crepe_stats["median_confidence"] + 0.1:
+            print("[CREPERunner] PYIN selected (higher confidence)")
+            return pyin_track
+        print("[CREPERunner] CREPE selected")
+        return crepe_track
 
-        raise PitchExtractionError("No stable pitch detected in the audio.")
-
-    def export_raw_track(self, track: Dict[str, List[float]], destination: Path) -> None:
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        with destination.open("w", encoding="utf-8") as fp:
-            json.dump(track, fp, indent=2)
+    def _log_track_stats(self, label: str, stats: Dict[str, float]) -> None:
+        print(
+            f"[CREPERunner] {label} finite={stats['finite_frames']} "
+            f"median_conf={stats['median_confidence']:.2f} "
+            f"freq_range={stats['min_frequency']:.1f}-{stats['max_frequency']:.1f}"
+        )

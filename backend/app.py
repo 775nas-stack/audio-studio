@@ -127,15 +127,16 @@ async def extract_midi(request: ProjectRequest) -> Dict[str, Any]:
         raise HTTPException(status_code=400, detail=f"CREPE processing failed: {exc}") from exc
 
     raw_finite = _finite_frame_count(raw_track)
-    engine = "pyin" if raw_track.get("humming_mode") else "crepe"
+    engine = raw_track.get("source", "crepe")
     print(
         f"[extract_midi] Raw {engine} track contains {raw_finite} finite frames out of {len(raw_track.get('frequency', []))}"
     )
     _write_json(project_dir / "melody_raw.json", raw_track)
 
     smooth_track = smooth_pitch.smooth_pitch_track(raw_track)
-    if raw_track.get("humming_mode"):
+    if raw_track.get("source") == "pyin" or raw_track.get("humming_mode"):
         smooth_track["humming_mode"] = True
+    smooth_track["source"] = smooth_track.get("source", engine)
     _write_json(project_dir / "melody_smooth.json", smooth_track)
 
     smooth_finite = _finite_frame_count(smooth_track)
@@ -146,11 +147,23 @@ async def extract_midi(request: ProjectRequest) -> Dict[str, Any]:
     print(
         f"[extract_midi] Completed project {request.project_id}: frames={len(smooth_track['time'])}, humming={bool(raw_track.get('humming_mode'))}"
     )
+    duration = float(smooth_track["time"][-1]) if smooth_track["time"] else 0.0
+    voiced_freq = [f for f in smooth_track["frequency"] if isinstance(f, (int, float)) and f > 0]
+    note_range = (
+        [float(min(voiced_freq)), float(max(voiced_freq))]
+        if voiced_freq
+        else [0.0, 0.0]
+    )
+
     return {
         "project_id": request.project_id,
         "frames": len(smooth_track["time"]),
+        "finite_frames": smooth_finite,
+        "engine": engine,
+        "duration_seconds": duration,
+        "note_range_hz": note_range,
         "message": "Melody extracted",
-        "humming_mode": bool(raw_track.get("humming_mode")),
+        "humming_mode": bool(smooth_track.get("humming_mode")),
     }
 
 
@@ -179,12 +192,10 @@ async def make_midi(request: ProjectRequest) -> Dict[str, Any]:
         f"[make_midi] Loaded smoothed track with {finite_frames} finite frames (humming_mode={humming_mode})"
     )
     try:
-        midi_path, note_count = midi_utils.build_midi_from_track(
-            track, midi_path, humming_mode=humming_mode
-        )
-    except ValueError as exc:
-        print(f"[make_midi] Builder reported ValueError: {exc}")
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        midi_path, note_count = midi_utils.build_midi_from_track(track, midi_path)
+    except midi_utils.NoMelodyError as exc:
+        print(f"[make_midi] NoMelodyError: {exc}")
+        return {"project_id": request.project_id, "error": str(exc)}
 
     print(
         f"[make_midi] MIDI created for project {request.project_id} → {midi_path} with {note_count} notes"

@@ -1,4 +1,4 @@
-"""Audio helpers for loading, resampling and saving waveforms."""
+"""Audio helpers for predictable mono, 16 kHz loading and saving."""
 
 from __future__ import annotations
 
@@ -9,59 +9,85 @@ from typing import Tuple
 import numpy as np
 import soundfile as sf
 
-try:  # Optional dependency guarding to provide clearer errors.
+try:  # Provide a clear error if librosa is unavailable at runtime.
     import librosa
-except Exception as exc:  # pragma: no cover - handled during runtime
+except Exception as exc:  # pragma: no cover - handled dynamically
     raise RuntimeError("librosa is required for audio processing") from exc
 
 
 TARGET_SAMPLE_RATE = 16_000
+_PEAK_TARGET = 0.9
 
 
 def _ensure_float32(audio: np.ndarray) -> np.ndarray:
-    """Cast the buffer to float32 without altering its dynamics."""
-
     if audio.dtype == np.float32:
         return audio
     return audio.astype(np.float32)
 
 
+def _to_mono(audio: np.ndarray) -> np.ndarray:
+    if audio.ndim == 1:
+        return audio
+    if audio.ndim == 2 and audio.shape[1] == 1:
+        return audio[:, 0]
+    return np.mean(audio, axis=1)
+
+
 def _resample(audio: np.ndarray, sr: int, target_sr: int) -> np.ndarray:
-    if sr == target_sr:
+    if sr == target_sr or audio.size == 0:
         return audio
     return librosa.resample(audio, orig_sr=sr, target_sr=target_sr)
 
 
-def _to_mono(audio: np.ndarray) -> np.ndarray:
-    """Convert arbitrary channel layouts to mono without shrinking length."""
-
-    if audio.ndim == 1:
+def _normalize(audio: np.ndarray, peak: float = _PEAK_TARGET) -> np.ndarray:
+    if audio.size == 0:
         return audio
+    current_peak = float(np.max(np.abs(audio)))
+    if current_peak <= 0:
+        return audio
+    if peak <= 0:
+        return audio
+    scale = peak / current_peak
+    return (audio * scale).astype(np.float32)
 
-    # SoundFile returns arrays shaped (frames, channels); transpose so librosa
-    # receives the (channels, frames) layout it expects, regardless of frame
-    # count, to avoid collapsing long clips to a single sample.
-    return librosa.to_mono(audio.T)
+
+def _finalize(audio: np.ndarray, sr: int, target_sr: int = TARGET_SAMPLE_RATE) -> Tuple[np.ndarray, int]:
+    mono = _to_mono(audio)
+    mono = mono.squeeze()
+    mono = _ensure_float32(mono)
+    mono = _resample(mono, sr, target_sr)
+    mono = _normalize(mono)
+    return mono.astype(np.float32), target_sr
+
+
+def load_audio_mono_16k(path: str | Path) -> Tuple[np.ndarray, int]:
+    """Load audio from disk, convert to mono and resample to 16 kHz."""
+
+    path = Path(path)
+    with sf.SoundFile(path) as sound_file:
+        audio = sound_file.read(always_2d=True, dtype="float32")
+        sr = sound_file.samplerate
+    return _finalize(audio, sr)
 
 
 def load_audio_bytes(data: bytes, target_sr: int = TARGET_SAMPLE_RATE) -> Tuple[np.ndarray, int]:
-    """Load audio from raw bytes and resample to the target sample rate."""
+    """Load audio from raw bytes using the same mono-16k path."""
 
     with sf.SoundFile(io.BytesIO(data)) as sound_file:
-        audio = sound_file.read(always_2d=True)
+        audio = sound_file.read(always_2d=True, dtype="float32")
         sr = sound_file.samplerate
-
-    audio = _to_mono(audio)
-    audio = _resample(audio, sr, target_sr)
-    audio = _ensure_float32(audio)
-    return audio, target_sr
+    audio, sr = _finalize(audio, sr, target_sr)
+    return audio, sr
 
 
 def load_audio_file(path: str | Path, target_sr: int = TARGET_SAMPLE_RATE) -> Tuple[np.ndarray, int]:
-    """Load an audio file from disk."""
+    """Backward-compatible helper that mirrors librosa.load behaviour."""
 
-    audio, sr = librosa.load(path, sr=target_sr, mono=True)
-    return _ensure_float32(audio), sr
+    audio, sr = load_audio_mono_16k(path)
+    if target_sr != TARGET_SAMPLE_RATE and sr != target_sr:
+        audio = _resample(audio, TARGET_SAMPLE_RATE, target_sr)
+        sr = target_sr
+    return audio, sr
 
 
 def save_wav(path: str | Path, audio: np.ndarray, sr: int = TARGET_SAMPLE_RATE) -> None:
@@ -79,55 +105,7 @@ def trim_leading_trailing_silence(audio: np.ndarray, threshold: float = 0.001) -
     return audio[start:end]
 
 
-def _db_to_amplitude(db_value: float) -> float:
-    return float(np.power(10.0, db_value / 20.0))
-
-
-def _high_pass_filter(audio: np.ndarray, sr: int, cutoff_hz: float = 55.0) -> np.ndarray:
-    """Apply a simple first-order high-pass filter."""
-
-    if audio.size == 0:
-        return audio
-    if cutoff_hz <= 0:
-        return audio
-    rc = 1.0 / (2 * np.pi * cutoff_hz)
-    dt = 1.0 / max(sr, 1)
-    alpha = rc / (rc + dt)
-    filtered = np.empty_like(audio)
-    filtered[0] = audio[0]
-    prev_output = filtered[0]
-    prev_input = audio[0]
-    for idx in range(1, audio.size):
-        current = audio[idx]
-        prev_output = alpha * (prev_output + current - prev_input)
-        filtered[idx] = prev_output
-        prev_input = current
-    return filtered
-
-
-def normalize_peak(audio: np.ndarray, target_db: float = -1.0) -> np.ndarray:
-    """Normalize audio so its peak matches the requested dBFS."""
-
-    if audio.size == 0:
-        return audio
-    peak = float(np.max(np.abs(audio)))
-    if peak == 0:
-        return audio
-    target_amp = _db_to_amplitude(target_db)
-    if target_amp <= 0:
-        return audio
-    scale = target_amp / peak
-    return audio * scale
-
-
 def preprocess_pitch_audio(audio: np.ndarray, sr: int) -> np.ndarray:
-    """Minimal preprocessing: convert to mono, resample, keep raw dynamics."""
+    """Legacy helper kept for compatibility with existing modules."""
 
-    if audio.ndim > 1:
-        audio = _to_mono(audio)
-
-    if sr != TARGET_SAMPLE_RATE:
-        audio = _resample(audio, sr, TARGET_SAMPLE_RATE)
-        sr = TARGET_SAMPLE_RATE
-
-    return _ensure_float32(audio)
+    return _finalize(audio, sr, TARGET_SAMPLE_RATE)[0]
