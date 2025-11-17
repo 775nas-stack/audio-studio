@@ -18,7 +18,7 @@ jobs:
 
       - name: Extract CREPE model files
         run: |
-          python3 - << 'EOF'
+          python3 - <<EOF
 from pathlib import Path
 import crepe, shutil
 
@@ -38,3 +38,4 @@ EOF
           git add models/
           git commit -m "Imported official CREPE pretrained models via pip" || echo "No changes"
           git push
+          
