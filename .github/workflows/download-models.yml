@@ -35,9 +35,7 @@ import sys
 import requests
 
 SESSION = requests.Session()
-headers = {
-    "Accept": "application/vnd.github+json"
-}
+headers = {"Accept": "application/vnd.github+json"}
 token = os.environ.get("GITHUB_TOKEN")
 if token:
     headers["Authorization"] = f"Bearer {token}"
@@ -58,7 +56,6 @@ MODELS = [
     },
 ]
 
-
 def fetch_download_url(repo, content_path, target_filename):
     url = f"https://api.github.com/repos/{repo}/contents/{content_path}"
     print(f"Fetching contents from {url}")
@@ -66,7 +63,7 @@ def fetch_download_url(repo, content_path, target_filename):
     response.raise_for_status()
     entries = response.json()
     if not isinstance(entries, list):
-        raise RuntimeError(f"Unexpected response structure when listing {repo}:{content_path}")
+        raise RuntimeError(f"Unexpected response when listing {repo}:{content_path}")
     for entry in entries:
         if entry.get("name") == target_filename:
             download_url = entry.get("download_url")
@@ -75,7 +72,6 @@ def fetch_download_url(repo, content_path, target_filename):
             print(f"Found download URL for {target_filename}")
             return download_url
     raise FileNotFoundError(f"{target_filename} not found in {repo}/{content_path}")
-
 
 def download_file(download_url, destination):
     os.makedirs(os.path.dirname(destination), exist_ok=True)
@@ -91,7 +87,6 @@ def download_file(download_url, destination):
         raise RuntimeError(f"Downloaded file at {destination} is empty")
     print(f"Saved {destination} ({size} bytes)")
 
-
 for model in MODELS:
     try:
         url = fetch_download_url(model["repo"], model["path"], model["filename"])
@@ -104,8 +99,6 @@ print("Model download completed successfully.")
 PY
 
       - name: Commit and push models
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
