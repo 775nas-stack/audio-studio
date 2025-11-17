@@ -37,6 +37,10 @@ def _frequency_lookup() -> np.ndarray:
 CREPE_FREQUENCIES = _frequency_lookup()
 
 
+class PitchExtractionError(RuntimeError):
+    """Raised when both CREPE and PYIN fail to detect a melody."""
+
+
 class CREPERunner:
     """Runs the bundled TensorFlow CREPE model or an explicit PYIN fallback."""
 
@@ -50,16 +54,15 @@ class CREPERunner:
         base = Path(__file__).resolve().parents[2]
         default_model = base / "models" / "melody" / "model.h5"
         model_path = Path(model_path) if model_path else default_model
-        if not default_model.exists():
-            raise FileNotFoundError(f"CREPE model not found at {default_model}")
-        if model_path != default_model and not model_path.exists():
+        if not model_path.exists():
             raise FileNotFoundError(f"CREPE model not found at {model_path}")
-        self.model_path = default_model
+        self.model_path = model_path
         self.use_pyin_fallback = use_pyin_fallback
         self.step_size_ms = step_size_ms
         hop = int(round(CREPE_SAMPLE_RATE * (self.step_size_ms / 1000.0)))
         self.hop_length = max(1, hop)
         self._model = None
+        self._voicing_threshold = 0.5
 
     def _load_model(self):  # pragma: no cover - heavy dependency
         if self._model is None:
@@ -97,6 +100,7 @@ class CREPERunner:
         best_idx = np.argmax(probabilities, axis=1)
         confidence = np.max(probabilities, axis=1)
         frequency = CREPE_FREQUENCIES[best_idx]
+        frequency = np.nan_to_num(frequency, nan=0.0, posinf=0.0, neginf=0.0)
         times = np.arange(len(frequency)) * (self.hop_length / sr)
         return {
             "time": times.astype(float).tolist(),
@@ -105,37 +109,114 @@ class CREPERunner:
             "sr": sr,
         }
 
-    def _pyin_fallback(self, audio: np.ndarray, sr: int) -> Dict[str, List[float]]:
+    def _pyin_humming(self, audio: np.ndarray, sr: int) -> Dict[str, List[float]]:
         frame_length = 2048
-        hop_length = frame_length // 4
+        hop_length = max(1, int(round(sr * 0.01)))
         f0, voiced_flag, voiced_prob = librosa.pyin(
             audio,
-            fmin=138.0,
-            fmax=2000.0,
+            fmin=50.0,
+            fmax=800.0,
+            sr=sr,
             frame_length=frame_length,
             hop_length=hop_length,
+            center=True,
+            fill_na=None,
         )
-        times = librosa.times_like(f0, sr=sr, hop_length=hop_length)
-        mask = ~np.isnan(f0)
-        f0 = np.nan_to_num(f0, nan=0.0)
+        times = librosa.times_like(
+            f0,
+            sr=sr,
+            hop_length=hop_length,
+            n_fft=frame_length,
+            center=True,
+        )
+        frequencies = np.nan_to_num(f0, nan=0.0).astype(np.float32)
+        if voiced_prob is None:
+            voiced_prob = np.zeros_like(frequencies)
+        confidence = np.nan_to_num(voiced_prob, nan=0.0).astype(np.float32)
+        confidence[frequencies <= 0] = 0.0
+        if voiced_flag is not None:
+            voiced_flag = np.asarray(voiced_flag, dtype=bool)
+        else:
+            voiced_flag = frequencies > 0
         return {
-            "time": times[mask].astype(float).tolist(),
-            "frequency": f0[mask].astype(float).tolist(),
-            "confidence": voiced_prob[mask].astype(float).tolist(),
+            "time": times.astype(float).tolist(),
+            "frequency": frequencies.astype(float).tolist(),
+            "confidence": confidence.astype(float).tolist(),
             "sr": sr,
+            "voiced_flag": voiced_flag.astype(bool).tolist(),
+            "humming_mode": True,
         }
 
-    def process_audio(self, audio_path: str | Path, *, use_pyin_fallback: bool | None = None) -> Dict[str, List[float]]:
+    def _has_voiced_frames(
+        self,
+        track: Dict[str, List[float]],
+        *,
+        min_frames: int,
+        use_confidence: bool,
+    ) -> bool:
+        freqs = np.asarray(track.get("frequency", []), dtype=float)
+        if freqs.size == 0:
+            return False
+        if use_confidence:
+            confidence = np.asarray(track.get("confidence", []), dtype=float)
+            if confidence.size != freqs.size:
+                return False
+            mask = confidence >= self._voicing_threshold
+        else:
+            mask = freqs > 0
+        return int(np.count_nonzero(mask)) >= min_frames
+
+    def _crepe_failed(self, track: Dict[str, List[float]]) -> bool:
+        freqs = np.asarray(track.get("frequency", []), dtype=float)
+        if freqs.size == 0 or np.isnan(freqs).any():
+            return True
+        return not self._has_voiced_frames(track, min_frames=30, use_confidence=True)
+
+    def _preprocess_audio(self, audio: np.ndarray, sr: int) -> np.ndarray:
+        return audio_utils.preprocess_pitch_audio(audio, sr)
+
+    def process_audio(
+        self,
+        audio_path: str | Path,
+        *,
+        use_pyin_fallback: bool | None = None,
+    ) -> Dict[str, List[float]]:
         """Load audio and run CREPE (or optional PYIN) to extract melody."""
 
         target_sr = audio_utils.TARGET_SAMPLE_RATE
         audio, _ = audio_utils.load_audio_file(audio_path, target_sr=target_sr)
+        audio = self._preprocess_audio(audio, target_sr)
+        print(f"[CREPERunner] Loaded audio '{audio_path}' with {audio.size} samples")
 
-        fallback = self.use_pyin_fallback if use_pyin_fallback is None else use_pyin_fallback
-        if not fallback:
-            return self._crepe_predict(audio, target_sr)
+        force_pyin = self.use_pyin_fallback if use_pyin_fallback is None else use_pyin_fallback
+        if force_pyin:
+            print("CREPE failed → PYIN humming mode used")
+            pyin_track = self._pyin_humming(audio, target_sr)
+            if self._has_voiced_frames(pyin_track, min_frames=1, use_confidence=False):
+                return pyin_track
+            raise PitchExtractionError("No stable pitch detected in the audio.")
 
-        return self._pyin_fallback(audio, target_sr)
+        crepe_track = None
+        try:
+            crepe_track = self._crepe_predict(audio, target_sr)
+        except Exception:
+            crepe_track = None
+
+        if crepe_track and not self._crepe_failed(crepe_track):
+            print("CREPE used")
+            crepe_track["humming_mode"] = False
+            return crepe_track
+
+        print("CREPE failed → PYIN humming mode used")
+        try:
+            pyin_track = self._pyin_humming(audio, target_sr)
+        except Exception as exc:  # pragma: no cover - depends on librosa internals
+            raise PitchExtractionError("No stable pitch detected in the audio.") from exc
+
+        if self._has_voiced_frames(pyin_track, min_frames=1, use_confidence=False):
+            return pyin_track
+
+        raise PitchExtractionError("No stable pitch detected in the audio.")
 
     def export_raw_track(self, track: Dict[str, List[float]], destination: Path) -> None:
         destination.parent.mkdir(parents=True, exist_ok=True)

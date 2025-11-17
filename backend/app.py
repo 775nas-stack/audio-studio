@@ -92,6 +92,7 @@ async def upload_audio(file: UploadFile = File(...)) -> Dict[str, Any]:
 async def extract_midi(request: ProjectRequest) -> Dict[str, Any]:
     """Run CREPE on the uploaded audio and smooth the detected melody."""
 
+    print(f"[extract_midi] Requested for project {request.project_id}")
     project_dir = _project_path(request.project_id)
     audio_path = project_dir / "uploaded.wav"
     if not audio_path.exists():
@@ -100,18 +101,27 @@ async def extract_midi(request: ProjectRequest) -> Dict[str, Any]:
     runner = crepe_runner.CREPERunner(model_path=MODEL_PATH)
     try:
         raw_track = runner.process_audio(str(audio_path))
+    except crepe_runner.PitchExtractionError as exc:
+        print(f"[extract_midi] Pitch extraction failed: {exc}")
+        return {"project_id": request.project_id, "error": str(exc)}
     except Exception as exc:  # pragma: no cover - depends on runtime env
         raise HTTPException(status_code=400, detail=f"CREPE processing failed: {exc}") from exc
 
     _write_json(project_dir / "melody_raw.json", raw_track)
 
     smooth_track = smooth_pitch.smooth_pitch_track(raw_track)
+    if raw_track.get("humming_mode"):
+        smooth_track["humming_mode"] = True
     _write_json(project_dir / "melody_smooth.json", smooth_track)
 
+    print(
+        f"[extract_midi] Completed project {request.project_id}: frames={len(smooth_track['time'])}, humming={bool(raw_track.get('humming_mode'))}"
+    )
     return {
         "project_id": request.project_id,
         "frames": len(smooth_track["time"]),
         "message": "Melody extracted",
+        "humming_mode": bool(raw_track.get("humming_mode")),
     }
 
 
@@ -119,6 +129,7 @@ async def extract_midi(request: ProjectRequest) -> Dict[str, Any]:
 async def make_midi(request: ProjectRequest) -> Dict[str, Any]:
     """Convert the smoothed melody to a MIDI file."""
 
+    print(f"[make_midi] Requested for project {request.project_id}")
     project_dir = _project_path(request.project_id)
     smooth_path = project_dir / "melody_smooth.json"
     if not smooth_path.exists():
@@ -128,8 +139,14 @@ async def make_midi(request: ProjectRequest) -> Dict[str, Any]:
         track = json.load(fp)
 
     midi_path = project_dir / "melody.mid"
-    midi_utils.melody_to_midi(track, midi_path)
+    humming_mode = bool(track.get("humming_mode"))
+    try:
+        midi_utils.build_midi_from_track(track, midi_path, humming_mode=humming_mode)
+    except ValueError as exc:
+        print(f"[make_midi] Builder reported ValueError: {exc}")
+        return {"project_id": request.project_id, "error": str(exc)}
 
+    print(f"[make_midi] MIDI created for project {request.project_id} → {midi_path}")
     return {
         "project_id": request.project_id,
         "midi_path": f"projects/{request.project_id}/melody.mid",
