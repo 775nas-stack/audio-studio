@@ -100,18 +100,23 @@ async def extract_midi(request: ProjectRequest) -> Dict[str, Any]:
     runner = crepe_runner.CREPERunner(model_path=MODEL_PATH)
     try:
         raw_track = runner.process_audio(str(audio_path))
+    except crepe_runner.PitchExtractionError as exc:
+        return {"project_id": request.project_id, "error": str(exc)}
     except Exception as exc:  # pragma: no cover - depends on runtime env
         raise HTTPException(status_code=400, detail=f"CREPE processing failed: {exc}") from exc
 
     _write_json(project_dir / "melody_raw.json", raw_track)
 
     smooth_track = smooth_pitch.smooth_pitch_track(raw_track)
+    if raw_track.get("humming_mode"):
+        smooth_track["humming_mode"] = True
     _write_json(project_dir / "melody_smooth.json", smooth_track)
 
     return {
         "project_id": request.project_id,
         "frames": len(smooth_track["time"]),
         "message": "Melody extracted",
+        "humming_mode": bool(raw_track.get("humming_mode")),
     }
 
 
@@ -128,7 +133,14 @@ async def make_midi(request: ProjectRequest) -> Dict[str, Any]:
         track = json.load(fp)
 
     midi_path = project_dir / "melody.mid"
-    midi_utils.melody_to_midi(track, midi_path)
+    humming_mode = bool(track.get("humming_mode"))
+    try:
+        midi_utils.build_midi_from_track(track, midi_path, humming_mode=humming_mode)
+    except ValueError as exc:
+        message = str(exc)
+        if message == "No stable melody detected":
+            return {"project_id": request.project_id, "error": message}
+        raise HTTPException(status_code=400, detail=message) from exc
 
     return {
         "project_id": request.project_id,
