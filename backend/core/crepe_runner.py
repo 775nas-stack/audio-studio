@@ -62,6 +62,7 @@ class CREPERunner:
         hop = int(round(CREPE_SAMPLE_RATE * (self.step_size_ms / 1000.0)))
         self.hop_length = max(1, hop)
         self._model = None
+        self._voicing_threshold = 0.5
 
     def _load_model(self):  # pragma: no cover - heavy dependency
         if self._model is None:
