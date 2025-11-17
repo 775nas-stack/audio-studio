@@ -1,0 +1,34 @@
+name: Download Models
+on:
+  workflow_dispatch:
+
+jobs:
+  download:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      - name: Download CREPE full model JSON
+        run: |
+          curl -L "https://raw.githubusercontent.com/marl/crepe/master/crepe/models/crepe-full.json" -o models/melody/crepe-full.json
+
+      - name: Download CREPE full model weights
+        run: |
+          curl -L "https://raw.githubusercontent.com/marl/crepe/master/crepe/models/crepe-full.weights" -o models/melody/crepe-full.weights
+
+      - name: Download Hubert base
+        run: |
+          curl -L "https://huggingface.co/lj1995/VoiceConverter/resolve/main/hubert_base.pt?download=1" -o models/choir/hubert_base.pt
+
+      - name: Download Demucs quantized
+        run: |
+          curl -L "https://dl.fbaipublicfiles.com/demucs/hybrid/demucs_quantized.ckpt" -o models/vocal/demucs_small.ckpt
+
+      - name: Commit models
+        run: |
+          git config user.name "github-actions"
+          git config user.email "actions@github.com"
+          git add models/*
+          git commit -m "Downloaded model binaries via GitHub Actions"
+          git push
