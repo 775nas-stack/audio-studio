@@ -1,1 +1,1 @@
-"""Backend package for the offline Audio Studio."""
+"""Offline Audio Studio backend package."""

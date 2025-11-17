@@ -1,236 +1,120 @@
-"""FastAPI backend for the offline Audio Studio phase 1 prototype."""
-
 from __future__ import annotations
 
 import json
-import math
-from datetime import datetime
+import logging
+import uuid
 from pathlib import Path
-from typing import Any, Dict
 
+import numpy as np
 from fastapi import FastAPI, File, HTTPException, UploadFile
-from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from backend.core import audio_utils, crepe_runner, midi_utils, smooth_pitch
+from .core.audio import load_audio
+from .core.extractor import extract_pitch
+from .core.midi_builder import build_midi
+from .core.smoothing import smooth_track
+from .core.types import NoMelodyError, PitchTrack
 
+LOGGER = logging.getLogger(__name__)
 
-BACKEND_DIR = Path(__file__).resolve().parent
-REPO_ROOT = BACKEND_DIR.parent
-DATA_DIR = REPO_ROOT / "data"
-FRONTEND_DIR = REPO_ROOT / "frontend"
+BASE_DIR = Path(__file__).resolve().parent.parent
+DATA_DIR = BASE_DIR / "data"
 PROJECTS_DIR = DATA_DIR / "projects"
-MODEL_PATH = REPO_ROOT / "models" / "melody" / "model.h5"
+FRONTEND_DIR = BASE_DIR / "frontend"
 
 PROJECTS_DIR.mkdir(parents=True, exist_ok=True)
+
+app = FastAPI(title="Offline Audio Studio")
+app.mount("/projects", StaticFiles(directory=PROJECTS_DIR), name="projects")
+app.mount("/static", StaticFiles(directory=FRONTEND_DIR), name="static")
 
 
 class ProjectRequest(BaseModel):
     project_id: str
 
 
-class ChatRequest(BaseModel):
-    message: str
+@app.exception_handler(NoMelodyError)
+async def melody_error_handler(_, exc: NoMelodyError):  # pragma: no cover - FastAPI integration
+    return JSONResponse(status_code=400, content={"error": str(exc)})
 
 
-def _project_path(project_id: str) -> Path:
-    project_dir = PROJECTS_DIR / project_id
-    if not project_dir.exists():
-        raise HTTPException(status_code=404, detail="Project not found")
-    return project_dir
+@app.exception_handler(HTTPException)
+async def http_exception_handler(_, exc: HTTPException):  # pragma: no cover - FastAPI integration
+    detail = exc.detail
+    if isinstance(detail, dict):
+        message = detail.get("error") or detail.get("detail") or str(detail)
+    else:
+        message = str(detail)
+    return JSONResponse(status_code=exc.status_code, content={"error": message})
 
 
-def _write_json(path: Path, payload: Dict[str, Any]) -> None:
-    with path.open("w", encoding="utf-8") as fp:
-        json.dump(payload, fp, indent=2)
-
-
-def _finite_frame_count(track: Dict[str, Any]) -> int:
-    freq = track.get("frequency") or []
-    if not isinstance(freq, list):
-        try:
-            freq = list(freq)
-        except TypeError:
-            return 0
-    count = 0
-    for value in freq:
-        try:
-            numeric = float(value)
-        except (TypeError, ValueError):
-            continue
-        if math.isfinite(numeric) and numeric > 0:
-            count += 1
-    return count
-
-
-app = FastAPI(title="Audio Studio Backend", version="1.0.0")
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
+@app.get("/")
+def index():  # pragma: no cover - FastAPI integration
+    return FileResponse(FRONTEND_DIR / "index.html")
 
 
 @app.post("/upload_audio")
-async def upload_audio(file: UploadFile = File(...)) -> Dict[str, Any]:
-    """Accept an audio file, normalize it and create a new project."""
-
-    extension = Path(file.filename or "").suffix.lower()
-    if extension not in {".wav", ".mp3"}:
-        raise HTTPException(status_code=400, detail="Only mp3 and wav files are supported")
-
-    project_id = datetime.utcnow().strftime("%Y%m%d-%H%M%S-%f")
-    project_dir = PROJECTS_DIR / project_id
-    project_dir.mkdir(parents=True, exist_ok=True)
-
-    data = await file.read()
-    if not data:
-        raise HTTPException(status_code=400, detail="Uploaded file is empty")
-
-    audio, sr = audio_utils.load_audio_bytes(data, target_sr=audio_utils.TARGET_SAMPLE_RATE)
-    output_path = project_dir / "uploaded.wav"
-    audio_utils.save_wav(output_path, audio, sr)
-
-    meta = {
-        "project_id": project_id,
-        "created_at": datetime.utcnow().isoformat(),
-        "source_name": file.filename,
-        "sample_rate": sr,
-    }
-    _write_json(project_dir / "meta.json", meta)
-
-    return {"project_id": project_id, "message": "Audio uploaded", "meta": meta}
+async def upload_audio(file: UploadFile = File(...)):
+    project_id = uuid.uuid4().hex
+    project_path = PROJECTS_DIR / project_id
+    project_path.mkdir(parents=True, exist_ok=True)
+    target = project_path / "input.wav"
+    contents = await file.read()
+    target.write_bytes(contents)
+    LOGGER.info("Uploaded audio for project %s", project_id)
+    return {"project_id": project_id, "message": "Audio uploaded."}
 
 
 @app.post("/extract_midi")
-async def extract_midi(request: ProjectRequest) -> Dict[str, Any]:
-    """Run CREPE on the uploaded audio and smooth the detected melody."""
-
-    print(f"[extract_midi] Requested for project {request.project_id}")
-    project_dir = _project_path(request.project_id)
-    audio_path = project_dir / "uploaded.wav"
+async def extract_midi(request: ProjectRequest):
+    project_path = PROJECTS_DIR / request.project_id
+    audio_path = project_path / "input.wav"
     if not audio_path.exists():
-        raise HTTPException(status_code=400, detail="Upload audio before extracting MIDI")
+        raise HTTPException(status_code=404, detail={"error": "Audio file not found."})
 
-    runner = crepe_runner.CREPERunner(model_path=MODEL_PATH)
-    try:
-        raw_track = runner.process_audio(str(audio_path))
-    except crepe_runner.PitchExtractionError as exc:
-        print(f"[extract_midi] Pitch extraction failed: {exc}")
-        return {"project_id": request.project_id, "error": str(exc)}
-    except Exception as exc:  # pragma: no cover - depends on runtime env
-        raise HTTPException(status_code=400, detail=f"CREPE processing failed: {exc}") from exc
+    audio, sr = load_audio(audio_path)
+    track = extract_pitch(audio, sr)
+    smoothed = smooth_track(track)
 
-    raw_finite = _finite_frame_count(raw_track)
-    engine = raw_track.get("source", "crepe")
-    print(
-        f"[extract_midi] Raw {engine} track contains {raw_finite} finite frames out of {len(raw_track.get('frequency', []))}"
-    )
-    _write_json(project_dir / "melody_raw.json", raw_track)
-
-    smooth_track = smooth_pitch.smooth_pitch_track(raw_track)
-    if raw_track.get("source") == "pyin" or raw_track.get("humming_mode"):
-        smooth_track["humming_mode"] = True
-    smooth_track["source"] = smooth_track.get("source", engine)
-    _write_json(project_dir / "melody_smooth.json", smooth_track)
-
-    smooth_finite = _finite_frame_count(smooth_track)
-    print(
-        f"[extract_midi] Smoothed track keeps {smooth_finite} finite frames (total={len(smooth_track['time'])})"
-    )
-
-    print(
-        f"[extract_midi] Completed project {request.project_id}: frames={len(smooth_track['time'])}, humming={bool(raw_track.get('humming_mode'))}"
-    )
-    duration = float(smooth_track["time"][-1]) if smooth_track["time"] else 0.0
-    voiced_freq = [f for f in smooth_track["frequency"] if isinstance(f, (int, float)) and f > 0]
-    note_range = (
-        [float(min(voiced_freq)), float(max(voiced_freq))]
-        if voiced_freq
-        else [0.0, 0.0]
-    )
+    contour = {
+        "time": smoothed.time.tolist(),
+        "frequency": smoothed.frequency.tolist(),
+        "confidence": smoothed.confidence.tolist(),
+        "engine": smoothed.engine,
+    }
+    contour_path = project_path / "contour.json"
+    contour_path.write_text(json.dumps(contour))
 
     return {
         "project_id": request.project_id,
-        "frames": len(smooth_track["time"]),
-        "finite_frames": smooth_finite,
-        "engine": engine,
-        "duration_seconds": duration,
-        "note_range_hz": note_range,
-        "message": "Melody extracted",
-        "humming_mode": bool(smooth_track.get("humming_mode")),
+        "engine": smoothed.engine,
+        "frames": smoothed.finite_count(),
     }
+
+
+def _load_contour(project_id: str) -> PitchTrack:
+    project_path = PROJECTS_DIR / project_id
+    contour_path = project_path / "contour.json"
+    if not contour_path.exists():
+        raise HTTPException(status_code=404, detail={"error": "No contour found. Run extraction first."})
+
+    payload = json.loads(contour_path.read_text())
+    return PitchTrack(
+        time=np.array(payload["time"], dtype=float),
+        frequency=np.array(payload["frequency"], dtype=float),
+        confidence=np.array(payload["confidence"], dtype=float),
+        engine=payload.get("engine", "crepe"),
+    )
 
 
 @app.post("/make_midi")
-async def make_midi(request: ProjectRequest) -> Dict[str, Any]:
-    """Convert the smoothed melody to a MIDI file."""
-
-    print(f"[make_midi] Requested for project {request.project_id}")
-    project_dir = _project_path(request.project_id)
-    smooth_path = project_dir / "melody_smooth.json"
-    if not smooth_path.exists():
-        raise HTTPException(status_code=400, detail="Run extract_midi before creating MIDI")
-
-    with smooth_path.open("r", encoding="utf-8") as fp:
-        track = json.load(fp)
-
-    midi_path = project_dir / "melody.mid"
-    humming_mode = bool(track.get("humming_mode"))
-    finite_frames = _finite_frame_count(track)
-    if finite_frames == 0:
-        raise HTTPException(
-            status_code=400,
-            detail="Melody track contains no valid frames; audio may be silent.",
-        )
-    print(
-        f"[make_midi] Loaded smoothed track with {finite_frames} finite frames (humming_mode={humming_mode})"
-    )
-    try:
-        midi_path, note_count = midi_utils.build_midi_from_track(track, midi_path)
-    except midi_utils.NoMelodyError as exc:
-        print(f"[make_midi] NoMelodyError: {exc}")
-        return {"project_id": request.project_id, "error": str(exc)}
-
-    print(
-        f"[make_midi] MIDI created for project {request.project_id} → {midi_path} with {note_count} notes"
-    )
+async def make_midi(request: ProjectRequest):
+    track = _load_contour(request.project_id)
+    midi_path = (PROJECTS_DIR / request.project_id) / "melody.mid"
+    build_midi(track, midi_path)
     return {
         "project_id": request.project_id,
-        "midi_path": f"projects/{request.project_id}/melody.mid",
-        "message": "MIDI file created",
+        "midi_url": f"/projects/{request.project_id}/melody.mid",
     }
-
-
-@app.post("/chat")
-async def mini_chat(request: ChatRequest) -> Dict[str, Any]:
-    """Simple rule-based chat endpoint used for placeholder UI."""
-
-    text = (request.message or "").strip().lower()
-    if not text:
-        reply = "Please type a message about your project."
-    elif "midi" in text:
-        reply = "To build a MIDI file, upload audio, extract melody, then hit Convert."
-    elif "hello" in text or "hi" in text:
-        reply = "Hello! I'm your offline studio helper."
-    elif "thanks" in text:
-        reply = "You're welcome! Let me know if you need another conversion."
-    else:
-        reply = "Phase 1 chat is simple – try asking about MIDI or upload steps."
-
-    return {"response": reply}
-
-
-app.mount("/projects", StaticFiles(directory=PROJECTS_DIR), name="projects")
-app.mount("/", StaticFiles(directory=FRONTEND_DIR, html=True), name="frontend")
-
-
-if __name__ == "__main__":  # pragma: no cover
-    import uvicorn
-
-    uvicorn.run(app, host="0.0.0.0", port=7860)
