@@ -98,7 +98,11 @@ async def extract_midi(request: ProjectRequest) -> Dict[str, Any]:
         raise HTTPException(status_code=400, detail="Upload audio before extracting MIDI")
 
     runner = crepe_runner.CREPERunner(model_path=MODEL_PATH)
-    raw_track = runner.process_audio(str(audio_path))
+    try:
+        raw_track = runner.process_audio(str(audio_path))
+    except Exception as exc:  # pragma: no cover - depends on runtime env
+        raise HTTPException(status_code=500, detail=f"CREPE processing failed: {exc}") from exc
+
     _write_json(project_dir / "melody_raw.json", raw_track)
 
     smooth_track = smooth_pitch.smooth_pitch_track(raw_track)
