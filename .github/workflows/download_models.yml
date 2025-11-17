@@ -37,3 +37,4 @@ EOF
           git add models/
           git commit -m "Imported official CREPE pretrained models via pip" || echo "Nothing to commit"
           git push
+
