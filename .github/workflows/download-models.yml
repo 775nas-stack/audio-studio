@@ -3,8 +3,7 @@ name: Download Models
 on:
   workflow_dispatch:
   push:
-    branches:
-      - main
+    branches: [ main ]
 
 jobs:
   download-models:
@@ -12,28 +11,30 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
-        with:
-          persist-credentials: true
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.x'
-
-      - name: Install dependencies
+      - name: Install tools
         run: |
-          python -m pip install --upgrade pip
-          pip install requests
+          sudo apt-get update
+          sudo apt-get install -y unzip bzip2 wget
 
-      - name: Download CREPE and TorchCREPE models
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      # CREPE v0.0.5
+      - name: Download CREPE v0.0.5
         run: |
-          python scripts/download_models.py
+          wget https://github.com/marl/crepe/archive/refs/tags/v0.0.5.zip -O crepe.zip
+          unzip crepe.zip
+          mkdir -p backend/vendor/crepe
+          cp crepe-0.0.5/crepe/assets/model-full.h5.bz2 backend/vendor/crepe/model-full.h5.bz2
+          bzip2 -d backend/vendor/crepe/model-full.h5.bz2
+
+      # TorchCREPE release with assets
+      - name: Download TorchCREPE assets (legacy release)
+        run: |
+          wget https://github.com/maxrmorrison/torchcrepe/archive/refs/tags/v0.0.2.zip -O torchcrepe.zip
+          unzip torchcrepe.zip
+          mkdir -p backend/vendor/torchcrepe
+          cp torchcrepe-0.0.2/torchcrepe/assets/full.pth backend/vendor/torchcrepe/full.pth
 
       - name: Commit and push models
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
@@ -41,5 +42,5 @@ jobs:
           if git diff --cached --quiet; then
             echo "No changes to commit."
           else
-            git commit -m "Add CREPE full model and TorchCREPE full model"
+            git commit -m "Add CREPE full model and TorchCREPE full model from legacy releases"
             git push
