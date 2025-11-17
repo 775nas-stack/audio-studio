@@ -28,3 +28,4 @@ jobs:
           git add models/*
           git commit -m "Downloaded model binaries via GitHub Actions"
           git push
+
