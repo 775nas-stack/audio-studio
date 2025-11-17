@@ -140,6 +140,7 @@ class CREPERunner:
             "frequency": frequencies.astype(float).tolist(),
             "confidence": confidence.astype(float).tolist(),
             "sr": sr,
+            "humming_mode": True,
         }
 
     def _has_voiced_frames(
@@ -198,6 +199,7 @@ class CREPERunner:
 
         if crepe_track and not self._crepe_failed(crepe_track):
             print("CREPE used")
+            crepe_track["humming_mode"] = False
             return crepe_track
 
         print("CREPE failed → PYIN humming mode used")

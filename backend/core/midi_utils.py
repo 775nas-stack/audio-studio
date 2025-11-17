@@ -10,8 +10,11 @@ import pretty_midi
 
 MIN_ALLOWED_FREQ = 65.0
 MAX_ALLOWED_FREQ = 1000.0
+HUMMING_MAX_ALLOWED_FREQ = 1500.0
 MAX_INTERP_GAP_SECONDS = 0.1
+HUMMING_MAX_INTERP_GAP_SECONDS = 0.05
 MIN_NOTE_DURATION_SECONDS = 0.08
+HUMMING_MIN_NOTE_DURATION_SECONDS = 0.03
 
 
 def _hz_to_midi(freq: float) -> int:
@@ -85,7 +88,11 @@ def _interpolate_small_gaps(
     return filled, valid
 
 
-def _clean_pitch_track(track: Dict[str, Sequence[float]]) -> Tuple[np.ndarray, np.ndarray]:
+def _clean_pitch_track(
+    track: Dict[str, Sequence[float]],
+    *,
+    humming_mode: bool = False,
+) -> Tuple[np.ndarray, np.ndarray]:
     time = np.asarray(track.get("time", []), dtype=float)
     freq = np.asarray(track.get("frequency", []), dtype=float)
     if time.size == 0 or freq.size == 0:
@@ -106,12 +113,14 @@ def _clean_pitch_track(track: Dict[str, Sequence[float]]) -> Tuple[np.ndarray, n
         if voiced_arr.size >= length:
             mask &= voiced_arr[:length]
 
-    freq, mask = _interpolate_small_gaps(time, freq, mask, MAX_INTERP_GAP_SECONDS)
+    max_gap = HUMMING_MAX_INTERP_GAP_SECONDS if humming_mode else MAX_INTERP_GAP_SECONDS
+    freq, mask = _interpolate_small_gaps(time, freq, mask, max_gap)
     freq = np.clip(freq, a_min=0.0, a_max=None)
 
     mask &= np.isfinite(freq)
     mask &= freq >= MIN_ALLOWED_FREQ
-    mask &= freq <= MAX_ALLOWED_FREQ
+    max_freq = HUMMING_MAX_ALLOWED_FREQ if humming_mode else MAX_ALLOWED_FREQ
+    mask &= freq <= max_freq
 
     if not np.any(mask):
         return np.array([], dtype=float), np.array([], dtype=float)
@@ -157,17 +166,32 @@ def _filter_short_segments(
     return filtered
 
 
-def melody_to_midi(track: Dict[str, List[float]], output_path: Path, tempo: float = 120.0) -> Path:
+def build_midi_from_track(
+    track: Dict[str, List[float]],
+    output_path: Path,
+    tempo: float = 120.0,
+    *,
+    humming_mode: bool = False,
+) -> Path:
     """Convert a smoothed melody track into a quantized PrettyMIDI file."""
 
-    time, freq = _clean_pitch_track(track)
+    time, freq = _clean_pitch_track(track, humming_mode=humming_mode)
     if time.size == 0 or freq.size == 0:
         raise ValueError("No stable melody detected")
 
     midi_pitch = np.array([_hz_to_midi(hz) for hz in freq], dtype=int)
     frame_duration = _estimate_frame_duration(time)
     segments = _merge_midi_frames(time, midi_pitch, frame_duration)
-    segments = _filter_short_segments(segments, MIN_NOTE_DURATION_SECONDS)
+    min_duration = (
+        HUMMING_MIN_NOTE_DURATION_SECONDS if humming_mode else MIN_NOTE_DURATION_SECONDS
+    )
+    segments = _filter_short_segments(segments, min_duration)
+
+    if not segments and humming_mode and time.size > 0:
+        start = float(time[0])
+        end = float(time[-1]) + max(frame_duration, min_duration, 1e-3)
+        fallback_pitch = int(np.clip(int(round(np.median(midi_pitch))), 0, 127))
+        segments = [(start, end, fallback_pitch)]
 
     if not segments:
         raise ValueError("No stable melody detected")
@@ -194,3 +218,20 @@ def melody_to_midi(track: Dict[str, List[float]], output_path: Path, tempo: floa
     output_path.parent.mkdir(parents=True, exist_ok=True)
     midi.write(str(output_path))
     return output_path
+
+
+def melody_to_midi(
+    track: Dict[str, List[float]],
+    output_path: Path,
+    tempo: float = 120.0,
+    *,
+    humming_mode: bool = False,
+) -> Path:
+    """Backward-compatible wrapper for callers relying on the old name."""
+
+    return build_midi_from_track(
+        track,
+        output_path,
+        tempo=tempo,
+        humming_mode=humming_mode,
+    )

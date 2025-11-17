@@ -108,12 +108,15 @@ async def extract_midi(request: ProjectRequest) -> Dict[str, Any]:
     _write_json(project_dir / "melody_raw.json", raw_track)
 
     smooth_track = smooth_pitch.smooth_pitch_track(raw_track)
+    if raw_track.get("humming_mode"):
+        smooth_track["humming_mode"] = True
     _write_json(project_dir / "melody_smooth.json", smooth_track)
 
     return {
         "project_id": request.project_id,
         "frames": len(smooth_track["time"]),
         "message": "Melody extracted",
+        "humming_mode": bool(raw_track.get("humming_mode")),
     }
 
 
@@ -130,8 +133,9 @@ async def make_midi(request: ProjectRequest) -> Dict[str, Any]:
         track = json.load(fp)
 
     midi_path = project_dir / "melody.mid"
+    humming_mode = bool(track.get("humming_mode"))
     try:
-        midi_utils.melody_to_midi(track, midi_path)
+        midi_utils.build_midi_from_track(track, midi_path, humming_mode=humming_mode)
     except ValueError as exc:
         message = str(exc)
         if message == "No stable melody detected":
