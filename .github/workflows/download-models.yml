@@ -23,11 +23,11 @@ jobs:
           wget https://github.com/marl/crepe/archive/refs/tags/v0.0.5.zip -O crepe.zip
           unzip crepe.zip
           mkdir -p backend/vendor/crepe
-          cp crepe-0.0.5/crepe/assets/model-full.h5.bz2 backend/vendor/crepe/model-full.h5.bz2
-          bzip2 -d backend/vendor/crepe/model-full.h5.bz2
+          cp crepe-0.0.5/crepe/model.h5.bz2 backend/vendor/crepe/model.h5.bz2
+          bzip2 -d backend/vendor/crepe/model.h5.bz2
 
-      # TorchCREPE release with assets
-      - name: Download TorchCREPE assets (legacy release)
+      # TorchCREPE v0.0.2 (contains assets/full.pth)
+      - name: Download TorchCREPE assets
         run: |
           wget https://github.com/maxrmorrison/torchcrepe/archive/refs/tags/v0.0.2.zip -O torchcrepe.zip
           unzip torchcrepe.zip
@@ -38,9 +38,9 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add backend/vendor/crepe/model-full.h5 backend/vendor/torchcrepe/full.pth
+          git add backend/vendor/crepe/model.h5 backend/vendor/torchcrepe/full.pth
           if git diff --cached --quiet; then
             echo "No changes to commit."
           else
-            git commit -m "Add CREPE full model and TorchCREPE full model from legacy releases"
+            git commit -m "Add CREPE model.h5 and TorchCREPE full.pth (legacy releases)"
             git push
