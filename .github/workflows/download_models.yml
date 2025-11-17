@@ -9,17 +9,21 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v3
 
-      - name: Download CREPE full ONNX
+      - name: Download CREPE full model JSON
         run: |
-          curl -L "https://github.com/marl/crepe/releases/download/v0.0.1/crepe-full.onnx" -o models/melody/crepe_full.onnx
+          curl -L "https://raw.githubusercontent.com/marl/crepe/master/crepe/models/crepe-full.json" -o models/melody/crepe-full.json
+
+      - name: Download CREPE full model weights
+        run: |
+          curl -L "https://raw.githubusercontent.com/marl/crepe/master/crepe/models/crepe-full.weights" -o models/melody/crepe-full.weights
 
       - name: Download Hubert base
         run: |
-          curl -L "https://huggingface.co/lj1995/VoiceConverter/resolve/main/hubert_base.pt" -o models/choir/hubert_base.pt
+          curl -L "https://huggingface.co/lj1995/VoiceConverter/resolve/main/hubert_base.pt?download=1" -o models/choir/hubert_base.pt
 
       - name: Download Demucs quantized
         run: |
-          curl -L "https://huggingface.co/facebook/demucs/resolve/main/demucs_quantized.ckpt" -o models/vocal/demucs_small.ckpt
+          curl -L "https://dl.fbaipublicfiles.com/demucs/hybrid/demucs_quantized.ckpt" -o models/vocal/demucs_small.ckpt
 
       - name: Commit models
         run: |
