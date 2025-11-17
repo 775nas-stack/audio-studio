@@ -10,25 +10,29 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v3
 
-      - name: Install unzip
+      - name: Install unzip and bzip2
         run: |
           sudo apt-get update
-          sudo apt-get install -y unzip
+          sudo apt-get install -y unzip bzip2
 
       - name: Download CREPE v0.0.5 archive
         run: |
           curl -L "https://github.com/marl/crepe/archive/refs/tags/v0.0.5.zip" -o crepe.zip
 
-      - name: Extract model files
+      - name: Extract model file
         run: |
           unzip crepe.zip
           mkdir -p models/melody
-          cp crepe-0.0.5/crepe/models/* models/melody/
+          cp crepe-0.0.5/crepe/model.h5.bz2 models/melody/
+
+      - name: Decompress model
+        run: |
+          bzip2 -d models/melody/model.h5.bz2
 
       - name: Commit models
         run: |
           git config user.name "github-actions"
           git config user.email "actions@github.com"
           git add models/
-          git commit -m "Imported CREPE models from v0.0.5 release" || echo "No changes"
+          git commit -m "Imported CREPE model.h5 from v0.0.5 release" || echo "No changes"
           git push
