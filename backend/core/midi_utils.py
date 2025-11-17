@@ -134,29 +134,29 @@ def _clean_pitch_track(
     track: Dict[str, Sequence[float]],
     *,
     humming_mode: bool = False,
-) -> Tuple[np.ndarray, np.ndarray, float, Tuple[float, float]]:
-    time = np.asarray(track.get("time", []), dtype=float)
-    freq = np.asarray(track.get("frequency", []), dtype=float)
-    if time.size == 0 or freq.size == 0:
-        return (
-            np.array([], dtype=float),
-            np.array([], dtype=float),
-            0.0,
-            (0.0, 0.0),
+) -> Tuple[np.ndarray, np.ndarray, float, Tuple[float, float], int]:
+    raw_time = np.asarray(track.get("time", []), dtype=float)
+    raw_freq = np.asarray(track.get("frequency", []), dtype=float)
+    if raw_time.size == 0 or raw_freq.size == 0:
+        valid = int(np.count_nonzero(np.isfinite(raw_freq) & (raw_freq > 0)))
+        bounds = (
+            float(raw_time[0]) if raw_time.size else 0.0,
+            float(raw_time[-1]) if raw_time.size else 0.0,
         )
+        return np.array([], dtype=float), np.array([], dtype=float), 0.0, bounds, valid
 
-    length = min(time.size, freq.size)
-    time = time[:length]
-    freq = np.nan_to_num(freq[:length], nan=0.0, posinf=0.0, neginf=0.0)
+    length = min(raw_time.size, raw_freq.size)
+    time = raw_time[:length]
+    freq = np.nan_to_num(raw_freq[:length], nan=0.0, posinf=0.0, neginf=0.0)
 
     order = np.argsort(time)
     time = time[order]
     freq = freq[order]
 
-    mask = np.ones(length, dtype=bool)
-    mask &= np.isfinite(time)
-    mask &= np.isfinite(freq)
+    initial_mask = np.isfinite(freq) & (freq > 0)
+    initial_valid = int(np.count_nonzero(initial_mask))
 
+    mask = initial_mask.copy()
     voiced_flag = track.get("voiced_flag")
     if voiced_flag is not None:
         voiced_arr = np.asarray(voiced_flag, dtype=bool)
@@ -164,9 +164,10 @@ def _clean_pitch_track(
             voiced_arr = voiced_arr[:length]
         else:
             voiced_arr = np.pad(voiced_arr, (0, length - voiced_arr.size), constant_values=False)
-        mask &= voiced_arr[order]
-    else:
-        mask &= freq > 0
+        voiced_arr = voiced_arr[order]
+        candidate = mask & voiced_arr
+        if np.any(candidate):
+            mask = candidate
 
     max_freq = HUMMING_MAX_ALLOWED_FREQ if humming_mode else MAX_ALLOWED_FREQ
     freq = np.clip(freq, a_min=0.0, a_max=max_freq)
@@ -190,7 +191,18 @@ def _clean_pitch_track(
         frame_duration = 0.01
 
     bounds = (float(time[0]), float(time[-1])) if time.size else (0.0, 0.0)
-    return time[mask], freq[mask], frame_duration, bounds
+    cleaned_time = time[mask]
+    cleaned_freq = freq[mask]
+
+    if cleaned_time.size == 0 and initial_valid > 0:
+        fallback_freq = float(np.median(freq[initial_mask]))
+        fallback_freq = float(np.clip(fallback_freq, MIN_ALLOWED_FREQ, max_freq))
+        start = bounds[0]
+        end = bounds[1] if bounds[1] > start else start + max(frame_duration, 0.5)
+        cleaned_time = np.array([start, end], dtype=float)
+        cleaned_freq = np.array([fallback_freq, fallback_freq], dtype=float)
+
+    return cleaned_time, cleaned_freq, frame_duration, bounds, initial_valid
 
 
 def _merge_midi_frames(
@@ -250,31 +262,43 @@ def _filter_short_segments(
     return filtered
 
 
-def _write_empty_midi(output_path: Path, tempo: float) -> Path:
-    midi = pretty_midi.PrettyMIDI(initial_tempo=tempo)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    midi.write(str(output_path))
-    return output_path
-
-
 def build_midi_from_track(
     track: Dict[str, List[float]],
     output_path: Path,
     tempo: float = 120.0,
     *,
     humming_mode: bool = False,
-) -> Path:
+) -> Tuple[Path, int]:
     """Convert a smoothed melody track into a quantized PrettyMIDI file."""
 
+    raw_freq = np.asarray(track.get("frequency", []), dtype=float)
+    raw_valid_freq = raw_freq[np.isfinite(raw_freq) & (raw_freq > 0)]
+    total_frames = len(track.get("time", []))
     print(
-        f"[midi_builder] Cleaning track with humming_mode={humming_mode} and {len(track.get('time', []))} frames"
+        f"[midi_builder] Cleaning track with humming_mode={humming_mode} and {total_frames} frames"
     )
-    time, freq, frame_duration, bounds = _clean_pitch_track(
+    time, freq, frame_duration, bounds, initial_valid = _clean_pitch_track(
         track, humming_mode=humming_mode
     )
     if time.size == 0 or freq.size == 0:
-        print("[midi_builder] No voiced frames – writing empty MIDI file")
-        return _write_empty_midi(output_path, tempo)
+        if initial_valid == 0:
+            raise ValueError("No melody, audio is effectively silent")
+        print("[midi_builder] No cleaned frames but raw pitch existed – synthesizing fallback")
+        start = bounds[0]
+        end = bounds[1] if bounds[1] > start else start + 0.5
+        fallback_freq = (
+            float(
+                np.clip(
+                    np.median(raw_valid_freq),
+                    MIN_ALLOWED_FREQ,
+                    HUMMING_MAX_ALLOWED_FREQ if humming_mode else MAX_ALLOWED_FREQ,
+                )
+            )
+            if raw_valid_freq.size
+            else MIN_ALLOWED_FREQ
+        )
+        freq = np.array([fallback_freq, fallback_freq], dtype=float)
+        time = np.array([start, end], dtype=float)
 
     midi_pitch = np.array([_hz_to_midi(hz) for hz in freq], dtype=int)
     merge_gap = HUMMING_MERGE_GAP_SECONDS if humming_mode else MERGE_GAP_SECONDS
@@ -320,8 +344,9 @@ def build_midi_from_track(
         coverage = f"{instrument.notes[0].start:.2f}s→{instrument.notes[-1].end:.2f}s"
     else:
         coverage = "0.00s"
-    print(f"[midi_builder] Wrote {len(instrument.notes)} notes covering {coverage}")
-    return output_path
+    note_count = len(instrument.notes)
+    print(f"[midi_builder] Wrote {note_count} notes covering {coverage}")
+    return output_path, note_count
 
 
 def melody_to_midi(
@@ -330,7 +355,7 @@ def melody_to_midi(
     tempo: float = 120.0,
     *,
     humming_mode: bool = False,
-) -> Path:
+) -> Tuple[Path, int]:
     """Backward-compatible wrapper for callers relying on the old name."""
 
     return build_midi_from_track(

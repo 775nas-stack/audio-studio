@@ -112,7 +112,7 @@ class CREPERunner:
     def _pyin_humming(self, audio: np.ndarray, sr: int) -> Dict[str, List[float]]:
         frame_length = 2048
         hop_length = max(1, int(round(sr * 0.01)))
-        f0, voiced_flag, voiced_prob = librosa.pyin(
+        f0, _, _ = librosa.pyin(
             audio,
             fmin=50.0,
             fmax=800.0,
@@ -122,55 +122,29 @@ class CREPERunner:
             center=True,
             fill_na=None,
         )
-        times = librosa.times_like(
-            f0,
-            sr=sr,
-            hop_length=hop_length,
-            n_fft=frame_length,
-            center=True,
-        )
-        frequencies = np.nan_to_num(f0, nan=0.0).astype(np.float32)
-        if voiced_prob is None:
-            voiced_prob = np.zeros_like(frequencies)
-        confidence = np.nan_to_num(voiced_prob, nan=0.0).astype(np.float32)
-        confidence[frequencies <= 0] = 0.0
-        if voiced_flag is not None:
-            voiced_flag = np.asarray(voiced_flag, dtype=bool)
-        else:
-            voiced_flag = frequencies > 0
+        if f0 is None:
+            f0 = np.array([], dtype=float)
+        frame_times = np.arange(len(f0), dtype=float) * (hop_length / sr)
+        mask = np.isfinite(f0) & (f0 > 0)
+        times = frame_times[mask].astype(float)
+        frequencies = f0[mask].astype(np.float32)
+        confidence = np.full_like(frequencies, 0.9, dtype=np.float32)
+        voiced_flag = np.ones_like(frequencies, dtype=bool)
         return {
-            "time": times.astype(float).tolist(),
+            "time": times.tolist(),
             "frequency": frequencies.astype(float).tolist(),
             "confidence": confidence.astype(float).tolist(),
             "sr": sr,
-            "voiced_flag": voiced_flag.astype(bool).tolist(),
+            "voiced_flag": voiced_flag.tolist(),
             "humming_mode": True,
         }
 
-    def _has_voiced_frames(
-        self,
-        track: Dict[str, List[float]],
-        *,
-        min_frames: int,
-        use_confidence: bool,
-    ) -> bool:
+    def _count_finite_frames(self, track: Dict[str, List[float]]) -> int:
         freqs = np.asarray(track.get("frequency", []), dtype=float)
         if freqs.size == 0:
-            return False
-        if use_confidence:
-            confidence = np.asarray(track.get("confidence", []), dtype=float)
-            if confidence.size != freqs.size:
-                return False
-            mask = confidence >= self._voicing_threshold
-        else:
-            mask = freqs > 0
-        return int(np.count_nonzero(mask)) >= min_frames
-
-    def _crepe_failed(self, track: Dict[str, List[float]]) -> bool:
-        freqs = np.asarray(track.get("frequency", []), dtype=float)
-        if freqs.size == 0 or np.isnan(freqs).any():
-            return True
-        return not self._has_voiced_frames(track, min_frames=30, use_confidence=True)
+            return 0
+        mask = np.isfinite(freqs) & (freqs > 0)
+        return int(np.count_nonzero(mask))
 
     def _preprocess_audio(self, audio: np.ndarray, sr: int) -> np.ndarray:
         return audio_utils.preprocess_pitch_audio(audio, sr)
@@ -192,7 +166,9 @@ class CREPERunner:
         if force_pyin:
             print("CREPE failed → PYIN humming mode used")
             pyin_track = self._pyin_humming(audio, target_sr)
-            if self._has_voiced_frames(pyin_track, min_frames=1, use_confidence=False):
+            pyin_count = self._count_finite_frames(pyin_track)
+            print(f"[CREPERunner] PYIN finite frames: {pyin_count}")
+            if pyin_count > 0:
                 return pyin_track
             raise PitchExtractionError("No stable pitch detected in the audio.")
 
@@ -202,10 +178,13 @@ class CREPERunner:
         except Exception:
             crepe_track = None
 
-        if crepe_track and not self._crepe_failed(crepe_track):
-            print("CREPE used")
-            crepe_track["humming_mode"] = False
-            return crepe_track
+        if crepe_track:
+            crepe_count = self._count_finite_frames(crepe_track)
+            print(f"[CREPERunner] CREPE finite frames: {crepe_count}")
+            if crepe_count > 0:
+                print("CREPE used")
+                crepe_track["humming_mode"] = False
+                return crepe_track
 
         print("CREPE failed → PYIN humming mode used")
         try:
@@ -213,7 +192,9 @@ class CREPERunner:
         except Exception as exc:  # pragma: no cover - depends on librosa internals
             raise PitchExtractionError("No stable pitch detected in the audio.") from exc
 
-        if self._has_voiced_frames(pyin_track, min_frames=1, use_confidence=False):
+        pyin_count = self._count_finite_frames(pyin_track)
+        print(f"[CREPERunner] PYIN finite frames: {pyin_count}")
+        if pyin_count > 0:
             return pyin_track
 
         raise PitchExtractionError("No stable pitch detected in the audio.")

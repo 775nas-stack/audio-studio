@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 import numpy as np
 
@@ -50,6 +50,30 @@ def _limit_jumps(values: np.ndarray, cents_threshold: float = JUMP_LIMIT_CENTS) 
         else:
             last = current
     return stabilized
+
+
+def _synthesize_flat_track(
+    time: np.ndarray, freq: np.ndarray, sr: int
+) -> Optional[Dict[str, List[float]]]:
+    mask = np.isfinite(freq) & (freq > 0)
+    if time.size == 0 or not np.any(mask):
+        return None
+    fallback_freq = float(np.median(freq[mask]))
+    fallback_freq = float(np.clip(fallback_freq, MIN_FREQ, MAX_FREQ))
+    start = float(time[0])
+    end = float(time[-1]) if time[-1] > start else start + 0.5
+    fallback_time = np.array([start, end], dtype=float)
+    fallback_freqs = np.array([fallback_freq, fallback_freq], dtype=float)
+    confidence = np.full(2, 0.9, dtype=float)
+    voiced_flag = np.ones(2, dtype=bool)
+    print("[smooth_pitch] Synthesizing fallback constant melody")
+    return {
+        "time": fallback_time.tolist(),
+        "frequency": fallback_freqs.tolist(),
+        "confidence": confidence.tolist(),
+        "sr": sr,
+        "voiced_flag": voiced_flag.tolist(),
+    }
 
 
 def _estimate_frame_duration(time: np.ndarray) -> float:
@@ -144,12 +168,21 @@ def _prepare_arrays(track: Dict[str, List[float]]) -> Dict[str, np.ndarray]:
 def smooth_pitch_track(track: Dict[str, List[float]]) -> Dict[str, List[float]]:
     """Repair humming pitch tracks by filling gaps and suppressing jitter."""
 
+    raw_time = np.asarray(track.get("time", []), dtype=float)
+    raw_freq = np.asarray(track.get("frequency", []), dtype=float)
+    raw_sr = int(track.get("sr", 16_000))
+    raw_valid = np.isfinite(raw_freq) & (raw_freq > 0)
+    raw_valid_count = int(np.count_nonzero(raw_valid))
+
     arrays = _prepare_arrays(track)
     time = arrays["time"]
     freq = arrays["freq"]
     conf = arrays["conf"]
 
     if time.size == 0 or freq.size == 0:
+        fallback = _synthesize_flat_track(raw_time, raw_freq, raw_sr)
+        if fallback is not None:
+            return fallback
         print("[smooth_pitch] Empty track received; returning original structure")
         return {
             "time": track.get("time", []),
@@ -177,6 +210,11 @@ def smooth_pitch_track(track: Dict[str, List[float]]) -> Dict[str, List[float]]:
         print("[smooth_pitch] Applied fallback constant pitch due to unstable input")
     else:
         voiced = repaired > 0
+
+    if np.count_nonzero(voiced) == 0 and raw_valid_count > 0:
+        fallback = _synthesize_flat_track(raw_time if raw_time.size else time, raw_freq, raw_sr)
+        if fallback is not None:
+            return fallback
 
     conf = np.nan_to_num(conf, nan=0.0)
     conf[~voiced] = 0.0
