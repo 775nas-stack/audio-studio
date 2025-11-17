@@ -18,7 +18,7 @@ jobs:
 
       - name: Extract CREPE model files
         run: |
-          python3 - <<EOF
+          python3 - <<'PYCODE'
 from pathlib import Path
 import crepe, shutil
 
@@ -29,7 +29,7 @@ target.mkdir(parents=True, exist_ok=True)
 for f in model_dir.glob("*"):
     shutil.copy(str(f), str(target))
     print("Copied:", f, "->", target)
-EOF
+PYCODE
 
       - name: Commit models
         run: |
