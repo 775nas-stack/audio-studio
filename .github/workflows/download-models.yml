@@ -26,13 +26,11 @@ jobs:
           cp crepe-0.0.5/crepe/model.h5.bz2 backend/vendor/crepe/model.h5.bz2
           bzip2 -d backend/vendor/crepe/model.h5.bz2
 
-      # TorchCREPE v0.0.2 (contains assets/full.pth)
-      - name: Download TorchCREPE assets
+      # TorchCREPE — use beta release (ONLY place assets exist)
+      - name: Download TorchCREPE full.pth
         run: |
-          wget https://github.com/maxrmorrison/torchcrepe/archive/refs/tags/v0.0.2.zip -O torchcrepe.zip
-          unzip torchcrepe.zip
           mkdir -p backend/vendor/torchcrepe
-          cp torchcrepe-0.0.2/torchcrepe/assets/full.pth backend/vendor/torchcrepe/full.pth
+          wget https://github.com/maxrmorrison/torchcrepe/releases/download/beta/full.pth -O backend/vendor/torchcrepe/full.pth
 
       - name: Commit and push models
         run: |
