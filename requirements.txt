@@ -4,8 +4,6 @@ numpy
 pretty_midi
 librosa
 soundfile
-tensorflow-cpu
-h5py
 python-multipart
 torch
 torchaudio
