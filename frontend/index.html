@@ -17,7 +17,9 @@
         <label class="field">
           <span>Pitch engine</span>
           <select id="engine-select">
-            <option value="torchcrepe_full" selected>TorchCREPE (GPU/CPU, recommended)</option>
+            <option value="auto" selected>Auto (HQ on GPU, fast CPU fallback)</option>
+            <option value="torchcrepe_hq">TorchCREPE High Quality (GPU)</option>
+            <option value="torchcrepe_full">TorchCREPE Full (GPU/CPU)</option>
             <option value="pyin">PYIN (CPU backup)</option>
             <option value="fallback">Fallback TinyMiniPitch (CPU)</option>
           </select>

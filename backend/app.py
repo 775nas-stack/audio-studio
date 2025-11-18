@@ -13,6 +13,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from .core.debug import ensure_debug_dir, write_debug_file
+from .core.melody_postprocess import MelodyNote
 from .core.midi_builder import build_midi
 from .core.pitch_pipeline import ENGINE_CHOICES, extract_pitch_pipeline
 from .core.smoothing import smooth_track
@@ -83,20 +84,24 @@ def _run_extraction(request: ExtractRequest) -> dict:
     if not audio_path.exists():
         raise HTTPException(status_code=404, detail={"error": "Audio file not found."})
 
-    if request.engine and request.engine not in ENGINE_CHOICES:
-        raise HTTPException(status_code=400, detail={"error": f"Unknown engine '{request.engine}'."})
+    engine_choice = request.engine
+    if engine_choice in (None, "", "auto"):
+        engine_choice = None
+    elif engine_choice not in ENGINE_CHOICES:
+        raise HTTPException(status_code=400, detail={"error": f"Unknown engine '{engine_choice}'."})
 
     debug_dir = project_path / "debug"
     ensure_debug_dir(debug_dir)
 
     try:
-        track = extract_pitch_pipeline(
+        result = extract_pitch_pipeline(
             audio_path=audio_path,
-            engine=request.engine,
+            engine=engine_choice,
             debug_dir=debug_dir,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail={"error": str(exc)}) from exc
+    track = result.track
     smoothed = smooth_track(track)
 
     write_debug_file(debug_dir, "smoothed_curve.json", smoothed.to_payload())
@@ -112,10 +117,16 @@ def _run_extraction(request: ExtractRequest) -> dict:
     contour_path = project_path / "contour.json"
     contour_path.write_text(json.dumps(contour))
 
+    notes_payload = [note.to_payload() for note in result.notes]
+    notes_path = project_path / "melody_notes.json"
+    notes_path.write_text(json.dumps(notes_payload))
+    write_debug_file(debug_dir, "melody_notes.json", notes_payload)
+
     return {
         "project_id": request.project_id,
         "engine": smoothed.engine,
         "frames": smoothed.finite_count(),
+        "notes": len(result.notes),
     }
 
 
@@ -146,13 +157,23 @@ def _load_contour(project_id: str) -> PitchTrack:
     )
 
 
+def _load_notes(project_id: str) -> list[MelodyNote] | None:
+    project_path = PROJECTS_DIR / project_id
+    notes_path = project_path / "melody_notes.json"
+    if not notes_path.exists():
+        return None
+    payload = json.loads(notes_path.read_text())
+    return [MelodyNote.from_payload(item) for item in payload]
+
+
 @app.post("/make_midi")
 async def make_midi(request: ProjectRequest):
     track = _load_contour(request.project_id)
+    notes = _load_notes(request.project_id)
     midi_path = (PROJECTS_DIR / request.project_id) / "melody.mid"
     debug_dir = (PROJECTS_DIR / request.project_id) / "debug"
     ensure_debug_dir(debug_dir)
-    build_midi(track, midi_path, debug_dir=debug_dir)
+    build_midi(track, midi_path, debug_dir=debug_dir, notes=notes)
     return {
         "project_id": request.project_id,
         "midi_url": f"/projects/{request.project_id}/melody.mid",
