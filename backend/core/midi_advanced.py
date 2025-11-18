@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import List
+from typing import List, Sequence
 
 import librosa
 import numpy as np
@@ -165,11 +165,16 @@ def _state_machine(track: PitchTrack) -> List[NoteEvent]:
     return merged
 
 
-def build_midi_advanced(track: PitchTrack, destination: Path) -> MidiExportResult:
+def build_midi_advanced(
+    track: PitchTrack, destination: Path, note_events: Sequence[NoteEvent] | None = None
+) -> MidiExportResult:
     if track.finite_count() == 0:
         raise NoMelodyError("No stable monophonic melody detected.")
 
-    notes = _state_machine(track)
+    if note_events is None:
+        notes = _state_machine(track)
+    else:
+        notes = list(note_events)
     if not notes:
         raise NoMelodyError("No stable monophonic melody detected.")
 

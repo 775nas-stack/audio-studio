@@ -1,17 +1,24 @@
-"""Routing helpers for pitch extraction."""
+"""Routing helpers for pitch extraction and melody post-processing."""
 
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
 import numpy as np
 
+try:  # Optional torch import for GPU detection
+    import torch
+except Exception:  # pragma: no cover - torch is expected but guard for lightweight envs
+    torch = None  # type: ignore
+
 from .audio import load_audio
 from .debug import write_debug_file
 from .pitch_engine import run_fallback, run_primary, run_torchcrepe_full
 from .pyin_engine import run_pyin
+from .melody_postprocess import MelodyNote, postprocess_pitch_track
 from .types import ModelMissingError, NoMelodyError, PitchTrack
 
 LOGGER = logging.getLogger(__name__)
@@ -26,14 +33,34 @@ ENGINE_RUNNERS: dict[str, Callable[[np.ndarray, int], PitchTrack]] = {
 ENGINE_CHOICES = tuple(ENGINE_RUNNERS.keys())
 
 
+@dataclass
+class PitchPipelineResult:
+    track: PitchTrack
+    notes: list[MelodyNote]
+
+
+def _gpu_available() -> bool:
+    return bool(torch is not None and torch.cuda.is_available())
+
+
+def _default_engine_order() -> list[str]:
+    order = list(ENGINE_PRIORITY)
+    if not _gpu_available() and "torchcrepe_hq" in order:
+        order.remove("torchcrepe_hq")
+        order.append("torchcrepe_hq")
+    return order
+
+
 def _ordered_engines(requested: str | None) -> list[str]:
+    if requested == "auto":
+        requested = None
     if requested is None:
-        order = list(ENGINE_PRIORITY)
+        order = _default_engine_order()
     else:
         if requested not in ENGINE_RUNNERS:
             raise ValueError(f"Unknown pitch engine '{requested}'.")
         order = [requested]
-        order.extend(name for name in ENGINE_PRIORITY if name not in order)
+        order.extend(name for name in _default_engine_order() if name not in order)
     for name in ENGINE_RUNNERS:
         if name not in order:
             order.append(name)
@@ -45,7 +72,7 @@ def extract_unified_pitch(
     sr: int,
     requested_engine: str | None = None,
     debug_dir: Path | None = None,
-) -> PitchTrack:
+) -> PitchPipelineResult:
     """Try engines in priority order until one returns usable frames."""
 
     attempts: list[dict[str, object]] = []
@@ -65,12 +92,39 @@ def extract_unified_pitch(
             continue
 
         frames = track.finite_count()
-        attempts.append({"engine": engine_name, "status": "ok" if frames else "empty", "frames": frames})
-        if frames:
-            write_debug_file(debug_dir, "engine_attempts.json", attempts)
-            write_debug_file(debug_dir, f"pitch_{engine_name}.json", track.to_payload(include_activation=True))
-            LOGGER.info("Selected engine %s (%s frames)", engine_name, frames)
-            return track
+        attempt_record: dict[str, object] = {"engine": engine_name, "frames": frames}
+        if frames == 0:
+            attempt_record["status"] = "empty"
+            attempts.append(attempt_record)
+            continue
+
+        try:
+            notes = postprocess_pitch_track(track)
+        except NoMelodyError as exc:
+            attempt_record["status"] = "postprocess_failed"
+            attempt_record["error"] = str(exc)
+            attempts.append(attempt_record)
+            LOGGER.warning("Post-processing rejected engine %s: %s", engine_name, exc)
+            continue
+
+        attempt_record["status"] = "ok"
+        attempt_record["notes"] = len(notes)
+        attempts.append(attempt_record)
+
+        write_debug_file(debug_dir, "engine_attempts.json", attempts)
+        write_debug_file(debug_dir, f"pitch_{engine_name}.json", track.to_payload(include_activation=True))
+        write_debug_file(
+            debug_dir,
+            f"melody_notes_{engine_name}.json",
+            [note.to_payload() for note in notes],
+        )
+        LOGGER.info(
+            "Selected engine %s (%s frames, %s notes)",
+            engine_name,
+            frames,
+            len(notes),
+        )
+        return PitchPipelineResult(track=track, notes=notes)
 
     write_debug_file(debug_dir, "engine_attempts.json", attempts)
 
@@ -80,7 +134,9 @@ def extract_unified_pitch(
     raise NoMelodyError("No stable monophonic melody detected.")
 
 
-def extract_pitch_pipeline(audio_path: Path, engine: str | None = None, debug_dir: Path | None = None) -> PitchTrack:
+def extract_pitch_pipeline(
+    audio_path: Path, engine: str | None = None, debug_dir: Path | None = None
+) -> PitchPipelineResult:
     """Load audio from disk and run the unified pitch extraction pipeline."""
 
     audio, sr = load_audio(audio_path)
@@ -97,6 +153,7 @@ def extract_pitch_pipeline(audio_path: Path, engine: str | None = None, debug_di
 __all__ = [
     "ENGINE_CHOICES",
     "ENGINE_PRIORITY",
+    "PitchPipelineResult",
     "extract_pitch_pipeline",
     "extract_unified_pitch",
 ]

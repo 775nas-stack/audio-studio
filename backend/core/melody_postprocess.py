@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import Callable, List, Sequence
+from typing import Callable, List, Mapping, Sequence
 
 import librosa
 import numpy as np
@@ -36,6 +36,29 @@ class MelodyNote:
     @property
     def duration(self) -> float:
         return self.end_time - self.start_time
+
+    def to_payload(self) -> dict[str, float]:
+        return {
+            "start_time": float(self.start_time),
+            "end_time": float(self.end_time),
+            "midi": float(self.midi),
+            "frequency": float(self.frequency),
+            "cents_offset": float(self.cents_offset),
+            "confidence": float(self.confidence),
+            "frames": int(self.frames),
+        }
+
+    @staticmethod
+    def from_payload(payload: Mapping[str, float]) -> "MelodyNote":
+        return MelodyNote(
+            start_time=float(payload["start_time"]),
+            end_time=float(payload["end_time"]),
+            midi=float(payload["midi"]),
+            frequency=float(payload["frequency"]),
+            cents_offset=float(payload.get("cents_offset", 0.0)),
+            confidence=float(payload.get("confidence", 0.0)),
+            frames=int(payload.get("frames", 0)),
+        )
 
 
 @dataclass

@@ -5,15 +5,19 @@ from pathlib import Path
 
 import numpy as np
 
-from .pitch_pipeline import extract_unified_pitch
-from .types import PitchTrack
+from .pitch_pipeline import PitchPipelineResult, extract_unified_pitch
 
 LOGGER = logging.getLogger(__name__)
 
 
-def extract_pitch(audio: np.ndarray, sr: int, engine: str | None = None, debug_dir: Path | None = None) -> PitchTrack:
+def extract_pitch(
+    audio: np.ndarray,
+    sr: int,
+    engine: str | None = None,
+    debug_dir: Path | None = None,
+) -> PitchPipelineResult:
     """Run the routing pipeline with optional engine preference."""
 
-    track = extract_unified_pitch(audio, sr, requested_engine=engine, debug_dir=debug_dir)
-    LOGGER.info("Unified pitch extraction complete using %s", track.engine)
-    return track
+    result = extract_unified_pitch(audio, sr, requested_engine=engine, debug_dir=debug_dir)
+    LOGGER.info("Unified pitch extraction complete using %s", result.track.engine)
+    return result
