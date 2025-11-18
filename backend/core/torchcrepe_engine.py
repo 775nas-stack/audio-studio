@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from pathlib import Path
 
 import numpy as np
@@ -47,6 +48,12 @@ def _load_model(device: torch.device) -> torch.nn.Module:
             break
     else:
         raise ModelMissingError("torchcrepe_full", MODEL_MESSAGE)
+
+    LOGGER.info(
+        "[torchcrepe-load] Using weights: %s (exists=%s)",
+        weights_path,
+        os.path.exists(weights_path),
+    )
 
     load_kwargs = {"map_location": device}
     try:

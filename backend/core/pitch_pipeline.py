@@ -76,25 +76,32 @@ def _debug_error_payload(engine: str, error: Exception) -> dict:
 
 def extract_unified_pitch(audio: np.ndarray, sr: int, requested_engine: str | None = None, debug_dir: Path | None = None) -> PitchTrack:
     errors: List[ModelMissingError] = []
+    engines = tuple(_engine_sequence(requested_engine))
 
-    for engine_name in _engine_sequence(requested_engine):
+    for index, engine_name in enumerate(engines):
         runner = ENGINE_RUNNERS.get(engine_name)
         if runner is None:
             continue
         start = time.perf_counter()
+        LOGGER.info("[engine-start] %s", engine_name)
         try:
             track = runner(audio, sr)
         except ModelMissingError as exc:
             errors.append(exc)
-            LOGGER.warning("Engine %s unavailable: %s", engine_name, exc)
+            LOGGER.warning("[engine-error] %s error=%s", engine_name, exc)
             write_debug_file(debug_dir, f"raw_{engine_name}.json", _debug_error_payload(engine_name, exc))
             continue
         except Exception as exc:  # pragma: no cover - defensive
-            LOGGER.exception("Engine %s crashed: %s", engine_name, exc)
+            LOGGER.warning("[engine-error] %s error=%s", engine_name, exc)
+            LOGGER.exception("Engine %s crashed", engine_name)
             write_debug_file(debug_dir, f"raw_{engine_name}.json", _debug_error_payload(engine_name, exc))
             continue
         duration = time.perf_counter() - start
-        LOGGER.info("engine=%s duration=%.2fs (success)", engine_name, duration)
+        LOGGER.info("[engine-success] %s duration=%.2fs", engine_name, duration)
+        LOGGER.info("[engine-final] %s", engine_name)
+
+        for skipped in engines[index + 1 :]:
+            LOGGER.info("[engine-skipped] %s (previous engine succeeded)", skipped)
 
         track.engine = engine_name  # normalize legacy names
         loudness = _compute_rms(audio, sr, track.time)
