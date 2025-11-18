@@ -39,6 +39,7 @@ class PitchTrack:
     activation: np.ndarray | None = None
     loudness: np.ndarray | None = None
     sources: np.ndarray | None = None
+    voicing: np.ndarray | None = None
 
     def finite_mask(self) -> np.ndarray:
         return np.isfinite(self.frequency)
@@ -57,6 +58,8 @@ class PitchTrack:
             payload["loudness"] = self.loudness.tolist()
         if self.sources is not None:
             payload["sources"] = self.sources.tolist()
+        if self.voicing is not None:
+            payload["voicing"] = self.voicing.tolist()
         if include_activation and self.activation is not None:
             payload["activation"] = self.activation.tolist()
         return payload

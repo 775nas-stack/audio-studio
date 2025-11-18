@@ -8,7 +8,7 @@ from safetensors.torch import load_file
 
 from backend.models.minipitch import MODEL_FILENAME, TinyMiniPitchNet, get_model_dir
 
-from .torchcrepe_engine import run_torchcrepe_full
+from .torchcrepe_engine import run_torchcrepe_full, run_torchcrepe_hq
 from .types import ModelMissingError, PitchTrack
 from .utils import (
     DEFAULT_CONFIDENCE_THRESHOLD,
@@ -22,9 +22,9 @@ _FALLBACK_MODEL: TinyMiniPitchNet | None = None
 
 
 def run_primary(audio: np.ndarray, sample_rate: int) -> PitchTrack:
-    """Run the TorchCREPE full-capacity network on the best available device."""
+    """Run the high-fidelity TorchCREPE network on the best available device."""
 
-    return run_torchcrepe_full(audio, sample_rate)
+    return run_torchcrepe_hq(audio, sample_rate)
 
 
 def _frame_audio(audio: np.ndarray) -> np.ndarray:
