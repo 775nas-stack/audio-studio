@@ -1,69 +1,47 @@
-"""Fallback MiniPitch model definition."""
+"""TinyMiniPitchNet fallback model definition."""
 from __future__ import annotations
 
-from dataclasses import dataclass
 from pathlib import Path
-from typing import Tuple
 
-import numpy as np
+import torch
+from torch import nn
 
 MODEL_FILENAME = "model.safetensors"
 
 
-@dataclass
-class MiniPitchFallbackModel:
-    """A minimal CPU-only MiniPitch model.
+class TinyMiniPitchNet(nn.Module):
+    """A lightweight convolutional fallback network for pitch estimation."""
 
-    The model does not perform any real inference. Instead, it returns arrays of
-    zeros for both pitch and confidence. This allows the rest of the pipeline to
-    interact with a predictable object when the real model is unavailable.
-    """
+    def __init__(self) -> None:
+        super().__init__()
+        channels = [1, 16, 32, 48]
+        layers: list[nn.Module] = []
+        for in_ch, out_ch in zip(channels[:-1], channels[1:]):
+            layers.append(
+                nn.Conv1d(
+                    in_channels=in_ch,
+                    out_channels=out_ch,
+                    kernel_size=15,
+                    padding=7,
+                    bias=True,
+                )
+            )
+            layers.append(nn.ReLU())
+        self.feature_extractor = nn.Sequential(*layers)
+        self.head = nn.Linear(channels[-1], 2)
 
-    model_path: Path
+    def forward(self, x: torch.Tensor) -> torch.Tensor:  # type: ignore[override]
+        """Run the network on audio frames shaped as (batch, channels, samples)."""
 
-    def __post_init__(self) -> None:
-        self.device = "cpu"
-        self._ensure_placeholder_exists()
-
-    def _ensure_placeholder_exists(self) -> None:
-        """Ensure that a placeholder model file exists on disk."""
-        placeholder_path = self.model_path / MODEL_FILENAME
-        if not placeholder_path.exists():
-            placeholder_path.write_text("placeholder", encoding="utf-8")
-
-    def predict(self, audio: np.ndarray, sample_rate: int | float | None = None) -> Tuple[np.ndarray, np.ndarray]:
-        """Return zero-valued pitch and confidence arrays.
-
-        Args:
-            audio: A 1-D numpy array of audio samples.
-            sample_rate: Included for API compatibility. It is unused because the
-                fallback model does not run inference.
-
-        Returns:
-            A tuple ``(pitch_hz, confidence)`` where both arrays are zeros with a
-            length matching the provided audio.
-        """
-
-        audio = np.asarray(audio, dtype=np.float32).reshape(-1)
-        num_samples = audio.shape[0]
-        pitch_hz = np.zeros(num_samples, dtype=np.float32)
-        confidence = np.zeros(num_samples, dtype=np.float32)
-        return pitch_hz, confidence
+        features = self.feature_extractor(x)
+        pooled = features.mean(dim=-1)
+        return self.head(pooled)
 
 
-def load_model(model_dir: str | Path | None = None) -> MiniPitchFallbackModel:
-    """Load the fallback MiniPitch model from ``model_dir``.
+def get_model_dir() -> Path:
+    """Return the directory that should contain the fallback weights."""
 
-    Args:
-        model_dir: Directory that should contain the placeholder ``model.safetensors``
-            file. If ``None``, the directory containing this file is used.
+    return Path(__file__).parent
 
-    Returns:
-        An instance of :class:`MiniPitchFallbackModel` configured to run on CPU.
-    """
 
-    if model_dir is None:
-        model_dir = Path(__file__).parent
-    else:
-        model_dir = Path(model_dir)
-    return MiniPitchFallbackModel(model_dir)
+__all__ = ["TinyMiniPitchNet", "MODEL_FILENAME", "get_model_dir"]
