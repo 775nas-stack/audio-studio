@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import os
+import time
 from pathlib import Path
 
 import numpy as np
@@ -73,9 +74,10 @@ def _load_model(device: torch.device) -> torch.nn.Module:
 
 
 def run_torchcrepe_full(audio: np.ndarray, sr: int) -> PitchTrack:
-    """Run TorchCREPE offline with the vendored full model on CPU."""
+    """Run TorchCREPE offline with the vendored full model on the best available device."""
 
-    device = torch.device("cpu")
+    device_name = "cuda" if torch.cuda.is_available() else "cpu"
+    device = torch.device(device_name)
     try:
         _load_model(device)
     except ModelMissingError:
@@ -92,7 +94,8 @@ def run_torchcrepe_full(audio: np.ndarray, sr: int) -> PitchTrack:
     audio_tensor = torch.tensor(audio, dtype=torch.float32, device=device).unsqueeze(0)
 
     try:
-        with torch.inference_mode():
+        start = time.perf_counter()
+        with torch.no_grad():
             pitch, periodicity = torchcrepe.predict(
                 audio_tensor,
                 sr,
@@ -105,6 +108,12 @@ def run_torchcrepe_full(audio: np.ndarray, sr: int) -> PitchTrack:
                 return_periodicity=True,
                 pad=True,
             )
+        duration = time.perf_counter() - start
+        LOGGER.info(
+            "[engine-success-detail] engine=torchcrepe_full device=%s duration=%.2fs",
+            device_name,
+            duration,
+        )
     except Exception as exc:  # pragma: no cover - defensive
         LOGGER.exception("TorchCREPE inference failed: %s", exc)
         return PitchTrack(
@@ -116,6 +125,6 @@ def run_torchcrepe_full(audio: np.ndarray, sr: int) -> PitchTrack:
 
     frequency = pitch.squeeze(0).squeeze(0).detach().cpu().numpy()
     confidence = periodicity.squeeze(0).squeeze(0).detach().cpu().numpy()
-    time = np.arange(frequency.shape[0], dtype=float) * (HOP_LENGTH / sr)
+    time_axis = np.arange(frequency.shape[0], dtype=float) * (HOP_LENGTH / sr)
 
-    return PitchTrack(time=time, frequency=frequency, confidence=confidence, engine="torchcrepe_full")
+    return PitchTrack(time=time_axis, frequency=frequency, confidence=confidence, engine="torchcrepe_full")
