@@ -1,7 +1,8 @@
+"""TorchCREPE inference helpers."""
+
 from __future__ import annotations
 
 import logging
-import os
 import time
 from pathlib import Path
 
@@ -11,12 +12,16 @@ import torchcrepe
 from torchcrepe import core as torchcrepe_core
 
 from .types import ModelMissingError, PitchTrack
+from .utils import (
+    DEFAULT_CONFIDENCE_THRESHOLD,
+    FMAX,
+    FMIN,
+    FRAME_HOP,
+    time_axis_for_frames,
+)
 
 LOGGER = logging.getLogger(__name__)
 
-HOP_LENGTH = 160  # 10 ms @ 16 kHz
-FMIN = 50.0
-FMAX = 1200.0
 MODEL_NAME = "full"
 MODEL_MESSAGE = (
     "Download full.pth from https://github.com/maxrmorrison/torchcrepe/raw/main/torchcrepe/assets/full.pth "
@@ -39,28 +44,25 @@ def _candidate_paths() -> list[Path]:
 def _load_model(device: torch.device) -> torch.nn.Module:
     global _MODEL_CACHE
     if _MODEL_CACHE is not None:
-        model, cached_device = _MODEL_CACHE
+        cached_model, cached_device = _MODEL_CACHE
         if cached_device == device:
-            return model
+            return cached_model
 
     for candidate in _candidate_paths():
         if candidate.exists():
             weights_path = candidate
             break
-    else:
+    else:  # pragma: no cover - file system fallback
         raise ModelMissingError("torchcrepe_full", MODEL_MESSAGE)
 
-    LOGGER.info(
-        "[torchcrepe-load] Using weights: %s (exists=%s)",
-        weights_path,
-        os.path.exists(weights_path),
-    )
+    LOGGER.info("[torchcrepe-load] Using weights: %s", weights_path)
 
     load_kwargs = {"map_location": device}
     try:
         state = torch.load(weights_path, weights_only=True, **load_kwargs)
     except TypeError:  # pragma: no cover - backwards compatibility
         state = torch.load(weights_path, **load_kwargs)
+
     model = torchcrepe.Crepe(MODEL_NAME)
     model.load_state_dict(state)
     model = model.to(device)
@@ -74,22 +76,18 @@ def _load_model(device: torch.device) -> torch.nn.Module:
 
 
 def run_torchcrepe_full(audio: np.ndarray, sr: int) -> PitchTrack:
-    """Run TorchCREPE offline with the vendored full model on the best available device."""
+    """Run TorchCREPE full model and return a rich PitchTrack."""
 
     device_name = "cuda" if torch.cuda.is_available() else "cpu"
     device = torch.device(device_name)
+
     try:
         _load_model(device)
     except ModelMissingError:
         raise
-    except Exception as exc:  # pragma: no cover - defensive
+    except Exception as exc:  # pragma: no cover - defensive guard
         LOGGER.exception("TorchCREPE failed to load: %s", exc)
-        return PitchTrack(
-            time=np.array([], dtype=float),
-            frequency=np.array([], dtype=float),
-            confidence=np.array([], dtype=float),
-            engine="torchcrepe_full",
-        )
+        raise
 
     audio_tensor = torch.tensor(audio, dtype=torch.float32, device=device).unsqueeze(0)
 
@@ -99,7 +97,7 @@ def run_torchcrepe_full(audio: np.ndarray, sr: int) -> PitchTrack:
             pitch, periodicity = torchcrepe.predict(
                 audio_tensor,
                 sr,
-                hop_length=HOP_LENGTH,
+                hop_length=FRAME_HOP,
                 fmin=FMIN,
                 fmax=FMAX,
                 model=MODEL_NAME,
@@ -114,17 +112,19 @@ def run_torchcrepe_full(audio: np.ndarray, sr: int) -> PitchTrack:
             device_name,
             duration,
         )
-    except Exception as exc:  # pragma: no cover - defensive
+    except Exception as exc:  # pragma: no cover - defensive guard
         LOGGER.exception("TorchCREPE inference failed: %s", exc)
-        return PitchTrack(
-            time=np.array([], dtype=float),
-            frequency=np.array([], dtype=float),
-            confidence=np.array([], dtype=float),
-            engine="torchcrepe_full",
-        )
+        raise
 
     frequency = pitch.squeeze(0).squeeze(0).detach().cpu().numpy()
     confidence = periodicity.squeeze(0).squeeze(0).detach().cpu().numpy()
-    time_axis = np.arange(frequency.shape[0], dtype=float) * (HOP_LENGTH / sr)
 
+    low_conf = confidence < DEFAULT_CONFIDENCE_THRESHOLD
+    frequency[low_conf] = np.nan
+    confidence[low_conf] = 0.0
+
+    time_axis = time_axis_for_frames(frequency.shape[0])
     return PitchTrack(time=time_axis, frequency=frequency, confidence=confidence, engine="torchcrepe_full")
+
+
+__all__ = ["run_torchcrepe_full"]

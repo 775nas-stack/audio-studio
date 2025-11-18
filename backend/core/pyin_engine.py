@@ -1,3 +1,5 @@
+"""Librosa PYIN backup engine."""
+
 from __future__ import annotations
 
 import logging
@@ -6,18 +8,18 @@ import librosa
 import numpy as np
 
 from .types import PitchTrack
+from .utils import FRAME_HOP, time_axis_for_frames
 
 LOGGER = logging.getLogger(__name__)
-
 
 FMIN = librosa.note_to_hz("C2")
 FMAX = librosa.note_to_hz("C6")
 FRAME_LENGTH = 1024
-HOP_LENGTH = 160  # 10 ms at 16 kHz
-FRAME_DURATION = HOP_LENGTH / 16000.0
 
 
 def run_pyin(audio: np.ndarray, sr: int) -> PitchTrack:
+    """Run PYIN on CPU as a last-resort monophonic estimator."""
+
     try:
         f0, voiced_flag, prob = librosa.pyin(
             audio,
@@ -25,9 +27,9 @@ def run_pyin(audio: np.ndarray, sr: int) -> PitchTrack:
             fmax=FMAX,
             sr=sr,
             frame_length=FRAME_LENGTH,
-            hop_length=HOP_LENGTH,
+            hop_length=FRAME_HOP,
         )
-    except Exception as exc:  # pragma: no cover - defensive
+    except Exception as exc:  # pragma: no cover - defensive guard
         LOGGER.exception("PYIN inference failed: %s", exc)
         return PitchTrack(
             time=np.array([], dtype=float),
@@ -39,9 +41,12 @@ def run_pyin(audio: np.ndarray, sr: int) -> PitchTrack:
     if prob is None:
         prob = voiced_flag.astype(float)
 
-    time = np.arange(len(f0)) * FRAME_DURATION
+    time = time_axis_for_frames(len(f0))
     voiced = voiced_flag.astype(bool)
     freq = np.where(voiced, f0, np.nan)
     conf = np.where(voiced, prob, 0.0)
 
     return PitchTrack(time=time, frequency=freq, confidence=conf, engine="pyin")
+
+
+__all__ = ["run_pyin"]

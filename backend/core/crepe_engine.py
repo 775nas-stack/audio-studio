@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import logging
+from __future__ import annotations
+
+import logging
 import os
 from pathlib import Path
 
 import numpy as np
 
-from ..vendor import crepe
 from .types import ModelMissingError, PitchTrack
 
 LOGGER = logging.getLogger(__name__)
@@ -44,6 +46,7 @@ def run_crepe_tiny(audio: np.ndarray, sr: int) -> PitchTrack:
     """Run the lightweight CREPE tiny model using vendored weights."""
 
     try:
+        from ..vendor import crepe
         model_path = _ensure_model_path()
         LOGGER.debug("Using CREPE tiny weights at %s", model_path)
         time, frequency, confidence, activation = crepe.predict(
@@ -56,6 +59,9 @@ def run_crepe_tiny(audio: np.ndarray, sr: int) -> PitchTrack:
         )
     except ModelMissingError:
         raise
+    except ImportError as exc:
+        instructions = "Install the optional CREPE dependencies (tensorflow, hmmlearn)."
+        raise ModelMissingError("crepe_tiny", instructions) from exc
     except Exception as exc:  # pragma: no cover - defensive
         LOGGER.exception("CREPE tiny inference failed: %s", exc)
         time = np.array([], dtype=float)

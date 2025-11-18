@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import shutil
 import uuid
 from pathlib import Path
 
@@ -13,7 +14,7 @@ from pydantic import BaseModel
 
 from .core.debug import ensure_debug_dir, write_debug_file
 from .core.midi_builder import build_midi
-from .core.pitch_pipeline import extract_pitch_pipeline
+from .core.pitch_pipeline import ENGINE_CHOICES, extract_pitch_pipeline
 from .core.smoothing import smooth_track
 from .core.types import ModelMissingError, NoMelodyError, PitchTrack
 
@@ -82,14 +83,20 @@ def _run_extraction(request: ExtractRequest) -> dict:
     if not audio_path.exists():
         raise HTTPException(status_code=404, detail={"error": "Audio file not found."})
 
+    if request.engine and request.engine not in ENGINE_CHOICES:
+        raise HTTPException(status_code=400, detail={"error": f"Unknown engine '{request.engine}'."})
+
     debug_dir = project_path / "debug"
     ensure_debug_dir(debug_dir)
 
-    track = extract_pitch_pipeline(
-        audio_path=audio_path,
-        engine=request.engine,
-        debug_dir=debug_dir,
-    )
+    try:
+        track = extract_pitch_pipeline(
+            audio_path=audio_path,
+            engine=request.engine,
+            debug_dir=debug_dir,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail={"error": str(exc)}) from exc
     smoothed = smooth_track(track)
 
     write_debug_file(debug_dir, "smoothed_curve.json", smoothed.to_payload())
@@ -150,3 +157,11 @@ async def make_midi(request: ProjectRequest):
         "project_id": request.project_id,
         "midi_url": f"/projects/{request.project_id}/melody.mid",
     }
+
+
+@app.post("/cleanup_project")
+async def cleanup_project(request: ProjectRequest):
+    project_path = PROJECTS_DIR / request.project_id
+    if project_path.exists():
+        shutil.rmtree(project_path)
+    return {"project_id": request.project_id, "status": "removed"}

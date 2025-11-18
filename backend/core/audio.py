@@ -7,7 +7,8 @@ import librosa
 import numpy as np
 import soundfile as sf
 
-TARGET_SR = 16000
+from .utils import TARGET_SAMPLE_RATE
+
 PEAK_TARGET = 0.9
 
 
@@ -19,9 +20,9 @@ def load_audio(path: Path) -> Tuple[np.ndarray, int]:
         data = data.mean(axis=1)
     data = data.astype(np.float32)
 
-    if sr != TARGET_SR:
-        data = librosa.resample(data, orig_sr=sr, target_sr=TARGET_SR)
-        sr = TARGET_SR
+    if sr != TARGET_SAMPLE_RATE:
+        data = librosa.resample(data, orig_sr=sr, target_sr=TARGET_SAMPLE_RATE)
+        sr = TARGET_SAMPLE_RATE
 
     peak = np.max(np.abs(data))
     if peak > 0:

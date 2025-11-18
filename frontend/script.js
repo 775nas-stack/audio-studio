@@ -5,6 +5,7 @@ const engineSelect = document.getElementById("engine-select");
 const uploadBtn = document.getElementById("upload-btn");
 const extractBtn = document.getElementById("extract-btn");
 const midiBtn = document.getElementById("midi-btn");
+const resetBtn = document.getElementById("reset-btn");
 
 let projectId = null;
 
@@ -81,6 +82,24 @@ async function handleMidi() {
   }
 }
 
+async function handleReset() {
+  linkEl.hidden = true;
+  fileInput.value = "";
+  if (!projectId) {
+    setStatus("Ready for a new project.");
+    return;
+  }
+  try {
+    await callJsonEndpoint("/cleanup_project");
+    setStatus("Project cleaned up. Upload a new WAV to continue.");
+  } catch (err) {
+    setStatus(err.message, true);
+    return;
+  }
+  projectId = null;
+}
+
 uploadBtn.addEventListener("click", handleUpload);
 extractBtn.addEventListener("click", handleExtract);
 midiBtn.addEventListener("click", handleMidi);
+resetBtn.addEventListener("click", handleReset);

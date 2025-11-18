@@ -3,6 +3,8 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
+import numpy as np
+
 from .pitch_pipeline import extract_unified_pitch
 from .types import PitchTrack
 
