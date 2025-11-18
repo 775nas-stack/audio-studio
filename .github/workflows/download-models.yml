@@ -11,17 +11,17 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      # 1. Checkout your repo
+      # Step 1: Checkout repository
       - name: Checkout repo
         uses: actions/checkout@v4
 
-      # 2. Install wget/unzip
+      # Step 2: Install needed tools
       - name: Install tools
         run: |
           sudo apt-get update
           sudo apt-get install -y wget unzip bzip2
 
-      # 3. Download CREPE v0.0.5 and extract model.h5.bz2
+      # Step 3: Download CREPE v0.0.5 model (model.h5.bz2) and extract
       - name: Download CREPE model
         run: |
           wget https://github.com/marl/crepe/archive/refs/tags/v0.0.5.zip -O crepe.zip
@@ -30,14 +30,14 @@ jobs:
           cp crepe-0.0.5/crepe/model.h5.bz2 backend/vendor/crepe/model.h5.bz2
           bzip2 -dk backend/vendor/crepe/model.h5.bz2
 
-      # 4. Download TorchCREPE full.pth from your GitHub Release (models-1)
-      - name: Download TorchCREPE full model
+      # Step 4: Download TorchCREPE full.pth from YOUR RELEASE
+      - name: Download TorchCREPE model
         run: |
           mkdir -p backend/vendor/torchcrepe
           wget https://github.com/775nas-stack/audio-studio/releases/download/models-1/full.pth -O backend/vendor/torchcrepe/full.pth
 
-      # 5. Commit the models into main branch
-      - name: Commit models back to repo
+      # Step 5: Commit models back to repo
+      - name: Commit models
         run: |
           git config --local user.name "github-actions"
           git config --local user.email "github-actions@github.com"
