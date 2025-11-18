@@ -10,15 +10,16 @@ import numpy as np
 
 from .audio import load_audio
 from .debug import write_debug_file
-from .pitch_engine import run_fallback, run_primary
+from .pitch_engine import run_fallback, run_primary, run_torchcrepe_full
 from .pyin_engine import run_pyin
 from .types import ModelMissingError, NoMelodyError, PitchTrack
 
 LOGGER = logging.getLogger(__name__)
 
-ENGINE_PRIORITY = ("torchcrepe_full", "pyin", "fallback")
+ENGINE_PRIORITY = ("torchcrepe_hq", "torchcrepe_full", "pyin", "fallback")
 ENGINE_RUNNERS: dict[str, Callable[[np.ndarray, int], PitchTrack]] = {
-    "torchcrepe_full": run_primary,
+    "torchcrepe_hq": run_primary,
+    "torchcrepe_full": run_torchcrepe_full,
     "pyin": run_pyin,
     "fallback": run_fallback,
 }
