@@ -16,7 +16,6 @@ from .types import ModelMissingError, NoMelodyError, PitchTrack
 
 LOGGER = logging.getLogger(__name__)
 
-MIN_FRAMES = 32
 TARGET_STEP = 0.005  # 5 ms
 
 ENGINE_PRIORITY: tuple[str, ...] = ("torchcrepe_full", "crepe_tiny", "pyin")
@@ -95,7 +94,7 @@ def extract_unified_pitch(audio: np.ndarray, sr: int, requested_engine: str | No
             write_debug_file(debug_dir, f"raw_{engine_name}.json", _debug_error_payload(engine_name, exc))
             continue
         duration = time.perf_counter() - start
-        LOGGER.info("extract_melody: engine=%s duration=%.2fs", engine_name, duration)
+        LOGGER.info("engine=%s duration=%.2fs (success)", engine_name, duration)
 
         track.engine = engine_name  # normalize legacy names
         loudness = _compute_rms(audio, sr, track.time)
@@ -103,14 +102,6 @@ def extract_unified_pitch(audio: np.ndarray, sr: int, requested_engine: str | No
         track.sources = np.full(track.time.shape, engine_name, dtype=object)
 
         write_debug_file(debug_dir, f"raw_{engine_name}.json", track.to_payload(include_activation=(engine_name == "crepe_tiny")))
-
-        if track.finite_count() < MIN_FRAMES:
-            LOGGER.warning(
-                "Engine %s produced insufficient voiced frames (%d). Trying fallback.",
-                engine_name,
-                track.finite_count(),
-            )
-            continue
 
         return track
 
