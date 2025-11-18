@@ -45,7 +45,8 @@ def _dynamic_threshold(confidence: np.ndarray) -> float:
     voiced = confidence[confidence > 0]
     if voiced.size == 0:
         return 0.2
-    return float(max(0.15, np.percentile(voiced, 35)))
+    percentile = np.percentile(voiced, 20)
+    return float(max(0.2, percentile))
 
 
 def _estimate_velocity(track: PitchTrack, frames: np.ndarray) -> int:

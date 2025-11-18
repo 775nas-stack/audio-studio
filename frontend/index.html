@@ -17,15 +17,16 @@
         <label class="field">
           <span>Pitch engine</span>
           <select id="engine-select">
-            <option value="torchcrepe_full" selected>TorchCREPE (full, offline, recommended)</option>
-            <option value="crepe_tiny">CREPE tiny (backup)</option>
-            <option value="pyin">PYIN (backup)</option>
+            <option value="torchcrepe_full" selected>TorchCREPE (GPU/CPU, recommended)</option>
+            <option value="pyin">PYIN (CPU backup)</option>
+            <option value="fallback">Fallback TinyMiniPitch (CPU)</option>
           </select>
         </label>
         <div class="actions">
           <button id="upload-btn">Upload</button>
           <button id="extract-btn">Extract Melody</button>
           <button id="midi-btn">Make MIDI</button>
+          <button id="reset-btn" type="button">Reset Project</button>
         </div>
         <p id="status">Waiting for audio...</p>
         <a id="midi-link" href="#" download hidden>Download MIDI</a>
