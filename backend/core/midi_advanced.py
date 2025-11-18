@@ -83,8 +83,21 @@ def _pitch_bend_events(track: PitchTrack, frames: np.ndarray, target_pitch: int)
         delta = diffs[idx]
         if np.isnan(delta):
             continue
-        value = int(np.clip(delta / PITCH_BEND_RANGE, -1.0, 1.0) * 8191)
-        bends.append(pretty_midi.PitchBend(value=value, time=float(track.time[frame])))
+
+        normalized = float(np.clip(delta / PITCH_BEND_RANGE, -1.0, 1.0))
+        scaled_value = int(round(normalized * 8192))
+        value = int(np.clip(scaled_value, -8192, 8191))
+
+        time_value = float(track.time[frame])
+        if not np.isfinite(time_value):
+            continue
+
+        bends.append(
+            pretty_midi.PitchBend(
+                pitch=value,
+                time=time_value,
+            )
+        )
     return bends
 
 
