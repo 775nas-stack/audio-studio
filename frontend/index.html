@@ -14,6 +14,14 @@
           <span>Select WAV recording</span>
           <input type="file" id="audio-input" accept="audio/wav" />
         </label>
+        <label class="field">
+          <span>Pitch engine</span>
+          <select id="engine-select">
+            <option value="torchcrepe_full" selected>TorchCREPE (full, offline, recommended)</option>
+            <option value="crepe_tiny">CREPE tiny (backup)</option>
+            <option value="pyin">PYIN (backup)</option>
+          </select>
+        </label>
         <div class="actions">
           <button id="upload-btn">Upload</button>
           <button id="extract-btn">Extract Melody</button>

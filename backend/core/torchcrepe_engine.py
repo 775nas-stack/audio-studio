@@ -25,11 +25,11 @@ _MODEL_CACHE: tuple[torch.nn.Module, torch.device] | None = None
 
 
 def _candidate_paths() -> list[Path]:
-    base_dir = Path(__file__).resolve().parent.parent
-    repo_root = base_dir.parent
+    backend_dir = Path(__file__).resolve().parent.parent
+    repo_root = backend_dir.parent
     return [
-        base_dir / "vendor" / "torchcrepe" / "full.pth",
-        base_dir / "vendor" / "torchcrepe" / "torchcrepe-full.pth",
+        backend_dir / "vendor" / "torchcrepe" / "full.pth",
+        backend_dir / "vendor" / "torchcrepe" / "torchcrepe-full.pth",
         repo_root / "models" / "torchcrepe" / "full.pth",
     ]
 
@@ -46,7 +46,7 @@ def _load_model(device: torch.device) -> torch.nn.Module:
             weights_path = candidate
             break
     else:
-        raise ModelMissingError("torchcrepe", MODEL_MESSAGE)
+        raise ModelMissingError("torchcrepe_full", MODEL_MESSAGE)
 
     load_kwargs = {"map_location": device}
     try:
@@ -65,10 +65,10 @@ def _load_model(device: torch.device) -> torch.nn.Module:
     return model
 
 
-def run_torchcrepe(audio: np.ndarray, sr: int) -> PitchTrack:
-    """Run TorchCREPE offline with manual weight management."""
+def run_torchcrepe_full(audio: np.ndarray, sr: int) -> PitchTrack:
+    """Run TorchCREPE offline with the vendored full model on CPU."""
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = torch.device("cpu")
     try:
         _load_model(device)
     except ModelMissingError:
@@ -79,7 +79,7 @@ def run_torchcrepe(audio: np.ndarray, sr: int) -> PitchTrack:
             time=np.array([], dtype=float),
             frequency=np.array([], dtype=float),
             confidence=np.array([], dtype=float),
-            engine="torchcrepe",
+            engine="torchcrepe_full",
         )
 
     audio_tensor = torch.tensor(audio, dtype=torch.float32, device=device).unsqueeze(0)
@@ -93,7 +93,7 @@ def run_torchcrepe(audio: np.ndarray, sr: int) -> PitchTrack:
                 fmin=FMIN,
                 fmax=FMAX,
                 model=MODEL_NAME,
-                batch_size=128,
+                batch_size=64,
                 device=device,
                 return_periodicity=True,
                 pad=True,
@@ -104,11 +104,11 @@ def run_torchcrepe(audio: np.ndarray, sr: int) -> PitchTrack:
             time=np.array([], dtype=float),
             frequency=np.array([], dtype=float),
             confidence=np.array([], dtype=float),
-            engine="torchcrepe",
+            engine="torchcrepe_full",
         )
 
     frequency = pitch.squeeze(0).squeeze(0).detach().cpu().numpy()
     confidence = periodicity.squeeze(0).squeeze(0).detach().cpu().numpy()
     time = np.arange(frequency.shape[0], dtype=float) * (HOP_LENGTH / sr)
 
-    return PitchTrack(time=time, frequency=frequency, confidence=confidence, engine="torchcrepe")
+    return PitchTrack(time=time, frequency=frequency, confidence=confidence, engine="torchcrepe_full")
