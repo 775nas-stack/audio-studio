@@ -1,44 +1,47 @@
-name: Download Models
+name: download-models
 
 on:
   workflow_dispatch:
   push:
-    branches: [ main ]
+    branches:
+      - main
 
 jobs:
   download-models:
     runs-on: ubuntu-latest
+
     steps:
-      - name: Checkout repository
+      # 1. Checkout your repo
+      - name: Checkout repo
         uses: actions/checkout@v4
 
+      # 2. Install wget/unzip
       - name: Install tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y unzip bzip2 wget
+          sudo apt-get install -y wget unzip bzip2
 
-      # CREPE v0.0.5
-      - name: Download CREPE v0.0.5
+      # 3. Download CREPE v0.0.5 and extract model.h5.bz2
+      - name: Download CREPE model
         run: |
           wget https://github.com/marl/crepe/archive/refs/tags/v0.0.5.zip -O crepe.zip
           unzip crepe.zip
           mkdir -p backend/vendor/crepe
           cp crepe-0.0.5/crepe/model.h5.bz2 backend/vendor/crepe/model.h5.bz2
-          bzip2 -d backend/vendor/crepe/model.h5.bz2
+          bzip2 -dk backend/vendor/crepe/model.h5.bz2
 
-      # TorchCREPE — use beta release (ONLY place assets exist)
-      - name: Download TorchCREPE full.pth
+      # 4. Download TorchCREPE full.pth from your GitHub Release (models-1)
+      - name: Download TorchCREPE full model
         run: |
           mkdir -p backend/vendor/torchcrepe
-          wget https://github.com/maxrmorrison/torchcrepe/releases/download/beta/full.pth -O backend/vendor/torchcrepe/full.pth
+          wget https://github.com/775nas-stack/audio-studio/releases/download/models-1/full.pth -O backend/vendor/torchcrepe/full.pth
 
-      - name: Commit and push models
+      # 5. Commit the models into main branch
+      - name: Commit models back to repo
         run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add backend/vendor/crepe/model.h5 backend/vendor/torchcrepe/full.pth
-          if git diff --cached --quiet; then
-            echo "No changes to commit."
-          else
-            git commit -m "Add CREPE model.h5 and TorchCREPE full.pth (legacy releases)"
-            git push
+          git config --local user.name "github-actions"
+          git config --local user.email "github-actions@github.com"
+          git add backend/vendor/crepe/model.h5
+          git add backend/vendor/torchcrepe/full.pth
+          git commit -m "Add CREPE + TorchCREPE models (auto)" || echo "No changes to commit"
+          git push || echo "Nothing to push"
