@@ -8,6 +8,7 @@ from typing import Callable, Dict, Iterable, List
 import librosa
 import numpy as np
 
+from .audio import load_audio
 from .crepe_engine import run_crepe_tiny
 from .debug import write_debug_file
 from .pyin_engine import run_pyin
@@ -115,3 +116,10 @@ def extract_unified_pitch(audio: np.ndarray, sr: int, requested_engine: str | No
     if errors:
         raise errors[0]
     raise NoMelodyError("No stable monophonic melody detected.")
+
+
+def extract_pitch_pipeline(audio_path: Path, engine: str | None = None, debug_dir: Path | None = None) -> PitchTrack:
+    """Load audio and run it through the unified pitch pipeline."""
+
+    audio, sr = load_audio(audio_path)
+    return extract_unified_pitch(audio, sr, requested_engine=engine, debug_dir=debug_dir)

@@ -11,10 +11,9 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from .core.audio import load_audio
 from .core.debug import ensure_debug_dir, write_debug_file
-from .core.extractor import extract_pitch
 from .core.midi_builder import build_midi
+from .core.pitch_pipeline import extract_pitch_pipeline
 from .core.smoothing import smooth_track
 from .core.types import ModelMissingError, NoMelodyError, PitchTrack
 
@@ -83,11 +82,14 @@ def _run_extraction(request: ExtractRequest) -> dict:
     if not audio_path.exists():
         raise HTTPException(status_code=404, detail={"error": "Audio file not found."})
 
-    audio, sr = load_audio(audio_path)
     debug_dir = project_path / "debug"
     ensure_debug_dir(debug_dir)
 
-    track = extract_pitch(audio, sr, engine=request.engine, debug_dir=debug_dir)
+    track = extract_pitch_pipeline(
+        audio_path=audio_path,
+        engine=request.engine,
+        debug_dir=debug_dir,
+    )
     smoothed = smooth_track(track)
 
     write_debug_file(debug_dir, "smoothed_curve.json", smoothed.to_payload())
