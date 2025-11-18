@@ -36,6 +36,10 @@ class ProjectRequest(BaseModel):
     project_id: str
 
 
+class ExtractRequest(ProjectRequest):
+    engine: str | None = None
+
+
 @app.exception_handler(NoMelodyError)
 async def melody_error_handler(_, exc: NoMelodyError):  # pragma: no cover - FastAPI integration
     return JSONResponse(status_code=400, content={"error": str(exc)})
@@ -73,8 +77,7 @@ async def upload_audio(file: UploadFile = File(...)):
     return {"project_id": project_id, "message": "Audio uploaded."}
 
 
-@app.post("/extract_midi")
-async def extract_midi(request: ProjectRequest):
+def _run_extraction(request: ExtractRequest) -> dict:
     project_path = PROJECTS_DIR / request.project_id
     audio_path = project_path / "input.wav"
     if not audio_path.exists():
@@ -84,7 +87,7 @@ async def extract_midi(request: ProjectRequest):
     debug_dir = project_path / "debug"
     ensure_debug_dir(debug_dir)
 
-    track = extract_pitch(audio, sr, debug_dir=debug_dir)
+    track = extract_pitch(audio, sr, engine=request.engine, debug_dir=debug_dir)
     smoothed = smooth_track(track)
 
     write_debug_file(debug_dir, "smoothed_curve.json", smoothed.to_payload())
@@ -105,6 +108,16 @@ async def extract_midi(request: ProjectRequest):
         "engine": smoothed.engine,
         "frames": smoothed.finite_count(),
     }
+
+
+@app.post("/extract_melody")
+async def extract_melody(request: ExtractRequest):  # pragma: no cover - FastAPI integration
+    return _run_extraction(request)
+
+
+@app.post("/extract_midi")
+async def extract_midi(request: ExtractRequest):  # pragma: no cover - FastAPI integration
+    return _run_extraction(request)
 
 
 def _load_contour(project_id: str) -> PitchTrack:

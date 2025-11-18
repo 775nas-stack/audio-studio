@@ -1,6 +1,7 @@
 const statusEl = document.getElementById("status");
 const linkEl = document.getElementById("midi-link");
 const fileInput = document.getElementById("audio-input");
+const engineSelect = document.getElementById("engine-select");
 const uploadBtn = document.getElementById("upload-btn");
 const extractBtn = document.getElementById("extract-btn");
 const midiBtn = document.getElementById("midi-btn");
@@ -39,14 +40,14 @@ async function handleUpload() {
   }
 }
 
-async function callJsonEndpoint(path) {
+async function callJsonEndpoint(path, extra = {}) {
   if (!projectId) {
     throw new Error("Upload audio before continuing.");
   }
   const res = await fetch(path, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ project_id: projectId }),
+    body: JSON.stringify({ project_id: projectId, ...extra }),
   });
   const data = await res.json();
   if (!res.ok) {
@@ -59,8 +60,9 @@ async function handleExtract() {
   setStatus("Extracting melody...");
   linkEl.hidden = true;
   try {
-    const data = await callJsonEndpoint("/extract_midi");
-    setStatus(`Melody extracted with ${data.engine} (${data.frames} frames).`);
+    const selectedEngine = engineSelect.value;
+    const data = await callJsonEndpoint("/extract_melody", { engine: selectedEngine });
+    setStatus(`Melody extracted with ${data.engine} (${data.frames} frames). Ready for MIDI.`);
   } catch (err) {
     setStatus(err.message, true);
   }

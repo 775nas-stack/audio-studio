@@ -27,7 +27,15 @@ class PitchTrack:
     time: np.ndarray
     frequency: np.ndarray
     confidence: np.ndarray
-    engine: Literal["crepe", "torchcrepe", "pyin", "hybrid", "unknown"]
+    engine: Literal[
+        "crepe",
+        "crepe_tiny",
+        "torchcrepe",
+        "torchcrepe_full",
+        "pyin",
+        "hybrid",
+        "unknown",
+    ]
     activation: np.ndarray | None = None
     loudness: np.ndarray | None = None
     sources: np.ndarray | None = None
