@@ -125,6 +125,6 @@ def run_torchcrepe_full(audio: np.ndarray, sr: int) -> PitchTrack:
 
     frequency = pitch.squeeze(0).squeeze(0).detach().cpu().numpy()
     confidence = periodicity.squeeze(0).squeeze(0).detach().cpu().numpy()
-    time = np.arange(frequency.shape[0], dtype=float) * (HOP_LENGTH / sr)
+    time_axis = np.arange(frequency.shape[0], dtype=float) * (HOP_LENGTH / sr)
 
-    return PitchTrack(time=time, frequency=frequency, confidence=confidence, engine="torchcrepe_full")
+    return PitchTrack(time=time_axis, frequency=frequency, confidence=confidence, engine="torchcrepe_full")
